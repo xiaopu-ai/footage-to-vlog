@@ -36,11 +36,22 @@
 
 需要 macOS 或 Linux（Windows 没测过）。
 
-```bash
-# macOS（用 Homebrew）
-brew install node ffmpeg python
-pip3 install numpy pillow jieba opencv-python-headless
+**最省事**：先按下面「安装」把 skill 装好，然后对 agent 说一句：
+
 ```
+按 footage-to-vlog 的 README 帮我把环境装好：跑 scripts/doctor.sh，缺什么装什么，直到全部打勾。
+```
+
+它会自己装，你按提示点允许就行。
+
+**手动装**（macOS，用 Homebrew）：
+
+```bash
+brew install node ffmpeg python
+python3 -m pip install --user numpy pillow jieba opencv-python-headless
+```
+
+如果第二条报 `externally-managed-environment`（新版 Homebrew Python 会这样），在命令末尾加 `--break-system-packages` 再跑一次。
 
 - **Node**：18 或更新。
 - **ffmpeg**：要带 libx264，Homebrew 版就行。

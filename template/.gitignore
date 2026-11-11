@@ -1,0 +1,7 @@
+node_modules/
+out/
+work/
+public/clips/*
+!public/clips/.gitkeep
+public/audio/**/*.wav
+public/audio/**/*.mp3

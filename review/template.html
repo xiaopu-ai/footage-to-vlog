@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<!-- footage-to-vlog 审核台模板：review/local_page.py 把 page.json 填进标题、顶栏、「本版改动」面板和 PAGE 数据行。
+     版式、交互沿用 Remotion 工作区 scripts/review-page/template.html（lambert v9 定稿版）；意见存本地 serve_local.py 的 /api/feedback。 -->
+<style>
+/* 布局:看片器。一次一个镜头——黑色舞台大画面 + 右侧审片栏,成组居中;底部胶片条按时长比例排全部镜头,下面一道配乐轨标分段和冲击点。总览是三列大图。 */
+[hidden]{display:none!important}
+:root{
+  --bg:#F5F5F7; --panel:#FFFFFF; --ink:#1D1D1F; --sub:#6E6E73; --hair:#D2D2D7;
+  --well:rgba(118,118,128,.12); --knob:#FFFFFF; --field:#EDEDF0;
+  --blue:#0071E3; --ok:#1E8E3E; --fix:#C9520A; --stage:#000000; --glass:rgba(245,245,247,.8);
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Noto Sans SC","Helvetica Neue",sans-serif;
+  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Hiragino Sans GB","Noto Sans SC","Helvetica Neue",sans-serif;
+  --bar:44px; --side:280px; --gut:20px; --strip:120px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#000000; --panel:#1C1C1E; --ink:#F5F5F7; --sub:#98989D; --hair:#38383A;
+  --well:rgba(118,118,128,.24); --knob:#636366; --field:#1C1C1E;
+  --blue:#2997FF; --ok:#30D158; --fix:#FF9F0A; --stage:#000000; --glass:rgba(22,22,23,.8); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#000000; --panel:#1C1C1E; --ink:#F5F5F7; --sub:#98989D; --hair:#38383A;
+  --well:rgba(118,118,128,.24); --knob:#636366; --field:#1C1C1E;
+  --blue:#2997FF; --ok:#30D158; --fix:#FF9F0A; --stage:#000000; --glass:rgba(22,22,23,.8); color-scheme:dark}
+@media (min-width:1600px){:root{--side:320px}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);margin:0;-webkit-font-smoothing:antialiased;min-height:100dvh;display:flex;flex-direction:column}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+svg{display:block}
+
+/* 顶栏 */
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;height:var(--bar);flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;padding-inline:var(--gut);
+  background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:.5px solid var(--hair)}
+.brand{display:flex;align-items:baseline;gap:10px;min-width:0}
+.brand b{font:600 15px var(--display);white-space:nowrap}
+.brand span{font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.segctl{display:inline-flex;background:var(--well);border-radius:9px;padding:2px}
+.segctl button{border:0;background:transparent;height:28px;padding:0 16px;border-radius:7px;font-size:13px;font-weight:500;color:var(--ink);cursor:pointer}
+.segctl button[aria-pressed="true"]{background:var(--knob);box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
+.right{display:flex;justify-content:flex-end;align-items:center;gap:14px}
+.prog{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;white-space:nowrap}
+.prog b{color:var(--ink);font-weight:600}
+.tlink{border:0;background:transparent;color:var(--blue);font-size:13px;cursor:pointer;padding:4px 0;white-space:nowrap}
+.help{width:24px;height:24px;border-radius:50%;border:0;background:var(--well);font-size:13px;font-weight:600;color:var(--sub);cursor:pointer}
+
+/* 逐镜 */
+main{flex:1;container-type:inline-size}
+#v-review{display:flex;flex-direction:column;justify-content:center}
+@media (min-width:1001px){body:not(.grid-mode){height:100dvh;overflow:hidden}}
+.review{display:flex;justify-content:center;align-items:flex-start;gap:20px;padding:12px var(--gut) 12px}
+.stage{flex:none;width:min(calc(100cqw - var(--side) - 20px - 2 * var(--gut)), calc((100dvh - var(--bar) - var(--strip) - 32px) * 16 / 9));min-width:0}
+.screen{position:relative;width:100%;aspect-ratio:16/9;background:var(--stage);border-radius:12px;overflow:hidden}
+.screen img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;background:var(--stage)}
+.nav{position:absolute;top:50%;width:36px;height:36px;margin-top:-18px;border-radius:50%;border:0;display:grid;place-items:center;cursor:pointer;color:#fff;
+  background:rgba(30,30,30,.35);backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);opacity:0;transition:opacity .2s}
+.screen:hover .nav,.nav:focus-visible{opacity:1}
+.nav.prev{left:12px} .nav.next{right:12px}
+.brow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px}
+.bmeta{font:500 11.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--sub)}
+.cite{border:0;background:none;padding:2px 0;font-size:12px;font-weight:600;color:var(--blue);cursor:pointer;white-space:nowrap}
+.bact{font-size:13px;font-weight:600;line-height:1.45;color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pick.noted::before{content:"";position:absolute;right:4px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--fix);z-index:1}
+.picks{display:grid;grid-template-columns:repeat(var(--cols,3),1fr);gap:6px}
+.pick{position:relative;width:100%;aspect-ratio:16/9;border:0;padding:0;border-radius:6px;overflow:hidden;cursor:pointer;background:var(--stage)}
+.pick img{width:100%;height:100%;object-fit:cover;display:block}
+.pick[aria-pressed="true"]{box-shadow:0 0 0 2px var(--blue)}
+.pick.trans::after{content:"";position:absolute;inset:0;border:1.5px dashed var(--sub);border-radius:6px;pointer-events:none}
+.pick.trans small{background:var(--blue);color:#fff;text-shadow:none;padding:0 4px;border-radius:3px}
+.pick small{position:absolute;left:5px;bottom:3px;font-size:10px;font-weight:600;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.8);font-variant-numeric:tabular-nums}
+
+/* 审片栏 */
+.side{flex:none;width:var(--side);display:grid;gap:14px;align-content:start;max-height:calc(100dvh - var(--bar) - var(--strip) - 28px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+.side::-webkit-scrollbar{display:none}
+.side.ovf{-webkit-mask-image:linear-gradient(#000 calc(100% - 28px),transparent);mask-image:linear-gradient(#000 calc(100% - 28px),transparent)}
+.o-id{order:1}.picks{order:2}.line{order:3}.status-row{order:4}.notebox{order:5}details{order:6}.warn{order:7}
+.sid{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sid b{font:600 28px/1.1 var(--display);letter-spacing:-.01em}
+.sid span{font-size:15px;font-weight:400;color:var(--sub)}
+.meta{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;margin-top:6px;display:grid;gap:2px}
+.mus{display:grid;gap:2px}
+.line{font:400 17px/1.6 var(--display);margin:0;text-wrap:pretty}
+.prevnote{order:4;margin:0;font-size:12.5px;line-height:1.55;color:var(--sub);text-wrap:pretty}
+.prevnote b{display:block;font-size:11px;font-weight:600;letter-spacing:.02em;color:var(--sub);margin-bottom:2px}
+.status-row{display:grid;grid-template-columns:1fr 36px;gap:8px;align-items:center}
+.status{display:grid;grid-template-columns:repeat(3,1fr);background:var(--well);border-radius:9px;padding:2px}
+.status button{border:0;background:transparent;height:32px;border-radius:7px;font-size:13px;font-weight:500;color:var(--ink);cursor:pointer}
+.status button[aria-pressed="true"]{background:var(--knob);box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
+.status button.ok[aria-pressed="true"]{color:var(--ok)} .status button.fix[aria-pressed="true"]{color:var(--fix)}
+.notebox{position:relative}
+textarea{display:block;width:100%;min-height:96px;max-height:240px;field-sizing:content;resize:none;border:.5px solid var(--hair);border-radius:10px;background:var(--field);color:var(--ink);font:15px/1.55 var(--sans);padding:10px 12px 22px}
+textarea:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 35%,transparent);border-color:var(--blue)}
+textarea::placeholder{color:var(--sub)}
+.saved{position:absolute;right:10px;bottom:6px;font-size:12px;color:var(--sub);pointer-events:none}
+details{border-top:.5px solid var(--hair);padding-top:12px}
+summary{cursor:pointer;list-style:none;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+summary::-webkit-details-marker{display:none}
+summary svg{transition:transform .2s;color:var(--sub)}
+details[open] summary svg{transform:rotate(90deg)}
+details p{margin:10px 0 0;font-size:13px;line-height:1.6}
+details h4{margin:12px 0 4px;font-size:12px;font-weight:500;color:var(--sub)}
+.beats{list-style:none;margin:0;padding:0;display:grid;gap:1px;font-size:13px}
+.beats li{display:grid;grid-template-columns:44px 1fr;gap:6px}
+.beats code{font:12px/1.6 var(--sans);color:var(--sub);font-variant-numeric:tabular-nums}
+.nextbtn{width:36px;height:36px;border:0;border-radius:50%;background:var(--well);color:var(--ink);cursor:pointer;display:grid;place-items:center}
+.warn{font-size:12px;color:var(--sub)} .warn.err{color:var(--fix)}
+
+/* 胶片条 */
+.strip{position:sticky;bottom:0;z-index:15;flex:none;margin-top:auto;padding:8px var(--gut) calc(8px + env(safe-area-inset-bottom,0px));background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--hair)}
+.strip-in{overflow-x:auto;overflow-y:hidden}
+.track{position:relative;min-width:960px}
+.reel{display:flex;gap:2px}
+.cell{position:relative;flex:var(--w) 1 0;min-width:40px;height:80px;border:0;padding:0;border-radius:6px;overflow:hidden;cursor:pointer;background:var(--stage);display:flex}
+.cell img{flex:1 0 142px;width:142px;height:80px;object-fit:cover;display:block;min-width:0}
+.cell[aria-current="true"]{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--blue);z-index:1}
+.cell b{position:absolute;left:5px;bottom:5px;font-size:11px;font-weight:600;color:#fff;background:rgba(0,0,0,.5);padding:0 4px;border-radius:3px;line-height:14px}
+.cell i{position:absolute;right:5px;top:5px;width:16px;height:16px;border-radius:50%;display:none;place-items:center;font-size:9px;font-style:normal;font-weight:700;color:#fff}
+.cell i.ok{display:grid;background:var(--ok)} .cell i.fix{display:grid;background:var(--fix)}
+.score{position:relative;height:18px;margin-top:5px}
+.mu{position:absolute;top:0;height:4px;border-radius:2px;background:color-mix(in srgb,var(--ink) 18%,transparent)}
+.mu.alt{background:color-mix(in srgb,var(--ink) 30%,transparent)}
+.mu span{position:absolute;left:0;top:6px;font-size:10px;font-weight:500;color:var(--sub);white-space:nowrap}
+.now{position:absolute;top:0;height:4px;border-radius:2px;background:color-mix(in srgb,var(--blue) 45%,transparent)}
+.hit{position:absolute;top:-3px;width:2px;height:10px;margin-left:-1px;border-radius:1px;background:var(--ink)}
+
+/* 总览 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,400px),1fr));gap:24px 16px;padding:20px var(--gut) 48px}
+.overall{grid-column:1/-1;display:grid;gap:8px;max-width:720px}
+.overall h3{margin:0;font:600 21px var(--display)}
+#note-all{min-height:44px}
+#note-all:focus{min-height:120px}
+.card{border:0;padding:0;background:transparent;text-align:left;cursor:pointer;display:grid;gap:8px}
+.card .img{position:relative;border-radius:12px;overflow:hidden;background:var(--stage);aspect-ratio:16/9}
+.card img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s}
+.card:hover img{transform:scale(1.02)}
+.card .badge{position:absolute;right:10px;top:10px;width:22px;height:22px;border-radius:50%;display:none;place-items:center;font-size:12px;font-weight:700;color:#fff}
+.card .badge.ok{display:grid;background:var(--ok)} .card .badge.fix{display:grid;background:var(--fix)}
+.card .cap{display:flex;align-items:baseline;gap:8px}
+.card .cap b{font:600 17px var(--display)}
+.card .cap span{font-size:13px;color:var(--sub)}
+.card .note{font-size:13px;color:var(--fix);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+body.grid-mode .strip{display:none}
+
+/* 弹层 */
+.sheet{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.32);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:grid;place-items:center;padding:20px}
+.sheet .pane{background:var(--panel);border-radius:14px;max-width:640px;width:100%;max-height:86dvh;overflow:auto;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,.3);display:grid;gap:12px}
+.sheet h3{margin:0;font:600 21px var(--display)}
+.sheet p.sub{margin:0;color:var(--sub);font-size:13px}
+.sheet ol,.sheet ul{margin:0;padding-left:20px;display:grid;gap:7px;font-size:15px}
+.sheet kbd{font:12px var(--sans);border:.5px solid var(--hair);border-bottom-width:1.5px;border-radius:5px;padding:1px 6px;background:var(--bg)}
+.sheet .row{display:flex;justify-content:flex-end}
+.pill{border:0;background:var(--blue);color:#fff;border-radius:999px;height:34px;padding:0 20px;font-size:14px;font-weight:500;cursor:pointer}
+
+@media (max-width:1000px){
+  .review{flex-direction:column;align-items:stretch}
+  .stage{width:min(100%, calc(50dvh * 16 / 9));margin-inline:auto}
+  .review{align-items:center}
+  .side{width:min(100%, calc(50dvh * 16 / 9));max-height:none;overflow:visible}
+  .side.ovf{-webkit-mask-image:none;mask-image:none}
+  .picks{grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}
+  .o-id{order:1}.status-row{order:2}.prevnote{order:2}.notebox{order:3}.line{order:4}.picks{order:5}details{order:6}
+  .strip{position:static}
+  .brand span{display:none}
+}
+@media (max-width:560px){
+  :root{--gut:16px}
+  .brand{display:none}
+  .prog{font-size:12px}
+  .stage{width:100%}
+  .bar{grid-template-columns:auto 1fr auto}
+  .screen{margin-inline:calc(-1 * var(--gut));width:calc(100% + 2 * var(--gut));border-radius:0}
+  .cell{height:72px} .cell img{height:72px;flex-basis:128px;width:128px}
+  .score{height:8px} .mu span{display:none}
+  .track{min-width:720px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* 矮屏桌面:胶片条加高后审片栏变矮 → 压紧间距、帧小图排一行,让「画面说明」留在可视区 */
+@media (max-height:820px) and (min-width:1001px){
+  .side{gap:6px}
+  .line{font-size:15px;line-height:1.5}
+  .picks{grid-template-columns:repeat(auto-fit,minmax(64px,1fr))}
+  }
+@media (max-width:1000px){
+  .stage{width:min(100%, calc(44dvh * 16 / 9))}
+  .mus{display:none}
+  #note{min-height:64px}
+  .picks{order:1;display:flex;overflow-x:auto;gap:6px;scroll-snap-type:x mandatory;scrollbar-width:none}
+  .pick{flex:0 0 112px;scroll-snap-align:start}
+}
+</style>
+
+<header class="bar">
+  <div class="brand"><b>__TITLE__</b><span>__BRAND__</span></div>
+  <div class="segctl" role="group" aria-label="视图"><button type="button" id="m-review" aria-pressed="true">逐镜</button><button type="button" id="m-grid" aria-pressed="false">总览</button></div>
+  <div class="right"><span class="prog" id="prog" aria-live="polite"><b>0</b> / __N__ 已审</span><button class="tlink" type="button" id="open-notes">本版改动</button><button class="help" type="button" id="open-help" aria-label="快捷键">?</button></div>
+</header>
+
+<main id="v-review">
+  <section class="review">
+    <div class="stage">
+      <div class="screen" id="screen">
+        <img id="still" alt="">
+        <button class="nav prev" type="button" id="prev" aria-label="上一个镜头"><svg width="12" height="20" viewBox="0 0 12 20" aria-hidden="true"><path d="M10 2 2 10l8 8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button class="nav next" type="button" id="next" aria-label="下一个镜头"><svg width="12" height="20" viewBox="0 0 12 20" aria-hidden="true"><path d="m2 2 8 8-8 8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+    </div>
+    <aside class="side" aria-label="审片">
+      <div class="o-id"><div class="sid"><b id="s-id"></b><span id="s-title"></span></div><div class="meta"><span id="s-tc"></span><span id="s-music" class="mus"></span><span class="brow"><span class="bmeta" id="b-meta"></span><button type="button" class="cite" id="b-cite">评论这张</button></span><span class="bact" id="b-act"></span></div></div>
+      <div class="picks" id="picks"></div>
+      <p class="line" id="s-line"></p>
+      <div class="status-row">
+        <div class="status" role="group" aria-label="审片结论">
+          <button type="button" class="ok" data-st="ok">通过</button>
+          <button type="button" class="fix" data-st="fix">要改</button>
+          <button type="button" class="wait" data-st="wait">待定</button>
+        </div>
+        <button class="nextbtn" type="button" id="next2" aria-label="下一镜"><svg width="8" height="13" viewBox="0 0 8 13" aria-hidden="true"><path d="m1.5 1.5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <p class="prevnote" id="s-prev" hidden></p>
+      <div class="notebox"><textarea id="note" aria-label="修改意见" placeholder="意见(可写帧号,如 @97)"></textarea><span class="saved" id="saved"></span></div>
+      <details id="more"><summary><svg width="7" height="11" viewBox="0 0 7 11" aria-hidden="true"><path d="m1.5 1.5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>画面说明</summary><p id="s-concept"></p><h4 id="h-beats">节拍(镜内帧)</h4><ul class="beats" id="s-beats"></ul><h4>声音</h4><p id="s-sound"></p></details>
+      <span class="warn" id="warn" hidden></span>
+    </aside>
+  </section>
+</main>
+
+<main id="v-grid" hidden>
+  <section class="grid" id="grid">
+    <div class="overall">
+      <h3>整体意见</h3>
+      <div class="notebox"><textarea id="note-all" aria-label="整体意见" placeholder="对整条片子、节奏、配乐或下一步的意见"></textarea><span class="saved" id="saved-all"></span></div>
+    </div>
+  </section>
+</main>
+
+<nav class="strip" aria-label="全片胶片条">
+  <div class="strip-in"><div class="track" id="track"><div class="reel" id="reel"></div><div class="score" id="score"></div></div></div>
+</nav>
+
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-h">
+  <div class="pane">
+    <h3 id="sheet-h">这一版改了什么</h3>
+    <p class="sub">__SUB__</p>
+    <ol>
+__NOTES__
+    </ol>
+    <div class="row"><button class="pill" type="button" id="close-notes">开始审片</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="help" hidden role="dialog" aria-modal="true" aria-labelledby="help-h">
+  <div class="pane">
+    <h3 id="help-h">快捷键</h3>
+    <ul>
+      <li><kbd>←</kbd> <kbd>→</kbd> 上一镜 / 下一镜</li>
+      <li><kbd>↑</kbd> <kbd>↓</kbd> 按节拍切这一镜的分镜图(最后一张是出场转场)</li>
+      <li><kbd>1</kbd> 通过(0.3 秒后自动到下一镜) · <kbd>2</kbd> 要改(光标进意见框) · <kbd>3</kbd> 待定</li>
+      <li>意见自动保存;<kbd>Esc</kbd> 离开意见框</li>
+    </ul>
+    <div class="row"><button class="pill" type="button" id="close-help">好</button></div>
+  </div>
+</div>
+
+<script>
+// 页面数据：local_page.py 从 page.json 生成，整块替换下面这一行 PAGE 的 JSON
+const PAGE = /*PAGE*/{"slug":"ftv","version":"v0","end":1,"shots":[],"music":[],"hits":[],"boards":{"__rep":{}}}/*END*/;
+const VERSION = PAGE.version, END = PAGE.end, SHOTS = PAGE.shots, MUSIC = PAGE.music, HITS = PAGE.hits, BOARDS = PAGE.boards;
+const KEY = (PAGE.slug || "ftv") + "-";
+const REP = BOARDS.__rep || {};
+for (const s of SHOTS) { s.boards = BOARDS[s.id] || (s.frames || []).map((f) => [f, "", "", 0, "beat"]); s.frames = s.boards.map((b) => b[0]); }
+
+const $ = (id) => document.getElementById(id);
+const fmt = (t) => { const m = Math.floor(t / 60); return m + ":" + (t - m * 60).toFixed(2).padStart(5, "0"); };
+const num = (f) => +(f.match(/(\d+)$/) || [0, 0])[1];
+const ls = { get(k){ try { return localStorage.getItem(k); } catch { return null; } }, set(k, v){ try { localStorage.setItem(k, v); } catch {} } };
+const fb = {}; for (const s of SHOTS) fb[s.id] = { status:"", note:"", at:"" }; fb._all = { status:"", note:"", at:"" };
+// picks:分镜板按节拍顺序,转场在最后
+for (const s of SHOTS) s.sorted = s.frames.slice();
+const isTrans = (f) => f.startsWith("T-") || f.startsWith("G-");
+const boardOf = (s, f) => s.boards.find((b) => b[0] === f) || [f, "", "", 0, "beat"];
+const repOf = (s) => REP[s.id] || s.boards.filter((b) => !isTrans(b[0])).slice(-1)[0][0];
+const fmtF = (f) => fmt(f / 30);
+const notedSet = (s) => new Set(((fb[s.id] && fb[s.id].note) || "").match(/@\d+/g) || []);
+const prefetched = new Set();
+const pickLabel = (s, f) => boardOf(s, f)[1] || "@" + num(f);
+let cur = 0, pick = 0, mode = "review", dirty = false, dirtyAll = false, autoTimer = 0;
+{ const h = (location.hash || "").slice(1); const i = SHOTS.findIndex((s) => s.id === h); const k = SHOTS.findIndex((s) => s.id === ls.get(KEY + "shot")); cur = i >= 0 ? i : k >= 0 ? k : 0; }
+const mainIdx = (s) => Math.max(0, s.sorted.indexOf(s.frames[0]));
+pick = mainIdx(SHOTS[cur]);
+
+// ---------- 胶片条 ----------
+const reel = $("reel"), score = $("score");
+SHOTS.forEach((s, i) => {
+  const b = document.createElement("button"); b.type = "button"; b.className = "cell"; b.style.setProperty("--w", (s.t[1] - s.t[0]).toFixed(2));
+  b.setAttribute("aria-label", s.id + " " + s.title); b.title = s.id + " · " + s.title + " · " + fmt(s.t[0]);
+  b._thumbs = [repOf(s), ...s.sorted.filter((x) => x !== repOf(s) && !isTrans(x))]; b._n = 0;
+  const dot = document.createElement("i"); dot.id = "dot-" + s.id; b.append(dot);
+  const lab = document.createElement("b"); lab.textContent = s.id; b.append(lab);
+  b.addEventListener("click", () => { go(i); if (mode !== "review") setMode("review"); });
+  reel.append(b);
+});
+MUSIC.forEach(([a, b, n], k) => { const d = document.createElement("span"); d.className = "mu" + (k % 2 ? " alt" : ""); d.dataset.a = a; d.dataset.b = b; const l = document.createElement("span"); l.textContent = n; d.append(l); score.append(d); });
+const nowBar = document.createElement("span"); nowBar.className = "now"; score.append(nowBar);
+for (const [t, n] of HITS) { const h = document.createElement("span"); h.className = "hit"; h.dataset.t = t; h.title = n + " · " + fmt(t); score.append(h); }
+// 时间 → 横坐标:按镜头格子的实际位置换算,和胶片对齐
+function xAt(t){
+  const cells = reel.children; let i = SHOTS.findIndex((s) => t >= s.t[0] && t < s.t[1]); if (i < 0) i = t <= 0 ? 0 : SHOTS.length - 1;
+  const s = SHOTS[i], c = cells[i]; const p = Math.min(1, Math.max(0, (t - s.t[0]) / (s.t[1] - s.t[0])));
+  return c.offsetLeft + p * c.offsetWidth;
+}
+function fillCells(){
+  for (const c of reel.children) { const want = Math.min(c._thumbs.length, Math.max(1, Math.round(c.clientWidth / 142)));
+    while (c._n < want) { const im = document.createElement("img"); im.src = "thumbs/" + c._thumbs[c._n] + ".jpg"; im.alt = ""; c.insertBefore(im, c.querySelector("i")); c._n++; } }
+}
+function layoutScore(){
+  fillCells();
+  for (const el of score.querySelectorAll(".mu")) { const a = xAt(+el.dataset.a), b = xAt(+el.dataset.b - 0.001); el.style.left = a + "px"; el.style.width = Math.max(4, b - a - 2) + "px"; }
+  for (const el of score.querySelectorAll(".hit")) el.style.left = xAt(+el.dataset.t) + "px";
+  const s = SHOTS[cur]; const a = xAt(s.t[0]), b = xAt(s.t[1] - 0.001); nowBar.style.left = a + "px"; nowBar.style.width = Math.max(6, b - a) + "px";
+}
+if (window.ResizeObserver) new ResizeObserver(layoutScore).observe(reel); else window.addEventListener("resize", layoutScore);
+
+// ---------- 总览 ----------
+(function(){
+  const grid = $("grid");
+  SHOTS.forEach((s, i) => {
+    const c = document.createElement("button"); c.type = "button"; c.className = "card";
+    const box = document.createElement("div"); box.className = "img";
+    const im = document.createElement("img"); im.src = "frames/" + repOf(s) + ".jpg"; im.alt = s.id + " " + s.title; im.loading = "lazy"; box.append(im);
+    const badge = document.createElement("span"); badge.className = "badge"; badge.id = "badge-" + s.id; box.append(badge);
+    const cap = document.createElement("div"); cap.className = "cap";
+    const b = document.createElement("b"); b.textContent = s.id; const t = document.createElement("span"); t.textContent = s.title + " · " + fmt(s.t[0]);
+    cap.append(b, t);
+    const note = document.createElement("div"); note.className = "note"; note.id = "gnote-" + s.id;
+    c.append(box, cap, note);
+    c.addEventListener("click", () => { go(i); setMode("review"); });
+    grid.append(c);
+  });
+})();
+
+// ---------- 渲染 ----------
+const still = $("still");
+function checkOvf(){ const sd = document.querySelector(".side"); if (sd) sd.classList.toggle("ovf", sd.scrollTop + sd.clientHeight < sd.scrollHeight - 1); }
+function render(){
+  const s = SHOTS[cur];
+  $("s-id").textContent = s.id; $("s-title").textContent = s.title;
+  $("s-tc").textContent = fmt(s.t[0]) + " – " + fmt(s.t[1]) + " · " + (s.t[1] - s.t[0]).toFixed(1) + " 秒";
+  const mid = (s.t[0] + s.t[1]) / 2; const mu = MUSIC.find(([a, b]) => mid >= a && mid < b);
+  const hits = HITS.filter(([t]) => t >= s.t[0] && t < s.t[1]).map(([t, n]) => "冲击点 " + fmt(t) + "「" + n + "」");
+  const sm0 = $("s-music"); sm0.textContent = "";
+  for (const t of ["配乐 · " + (mu ? mu[2] : ""), ...hits]) { const sp = document.createElement("span"); sp.textContent = t; sm0.append(sp); }
+  $("s-prev").hidden = !s.prev; $("s-prev").textContent = ""; if (s.prev) { const b = document.createElement("b"); b.textContent = "上一版你的意见"; $("s-prev").append(b, document.createTextNode(s.prev)); }
+  $("s-line").textContent = s.line; $("s-concept").textContent = s.concept + (s.note ? " " + s.note : ""); $("s-sound").textContent = s.sound;
+  const ul = $("s-beats"); ul.textContent = "";
+  for (const [f, t] of s.beats) { const li = document.createElement("li"); const c = document.createElement("code"); c.textContent = f; const sp = document.createElement("span"); sp.textContent = t; li.append(c, sp); ul.append(li); }
+  $("h-beats").hidden = !s.beats.length;
+  if (pick >= s.sorted.length) pick = mainIdx(s);
+  const f0 = s.sorted[pick], bd = boardOf(s, f0);
+  still.src = "frames/" + f0 + (f0.startsWith("G-") ? ".gif" : ".jpg"); still.alt = s.id + " " + s.title + " " + (bd[2] || "");
+  $("b-meta").textContent = (pick + 1) + " / " + s.sorted.length + " · " + (f0.startsWith("G-") ? "动图 · " : isTrans(f0) ? "转场 · 入画 " : bd[1] + " · ") + fmtF(bd[3]);
+  $("b-act").textContent = (isTrans(f0) ? "" : "") + (bd[2] || ""); $("b-act").title = bd[2] || "";
+  for (const f of s.sorted) if (!prefetched.has(f)) { prefetched.add(f); const im = new Image(); im.src = "frames/" + f + (f.startsWith("G-") ? ".gif" : ".jpg"); }
+  const picks = $("picks"); picks.textContent = ""; const nP = s.sorted.length; picks.style.setProperty("--cols", nP === 4 ? 2 : Math.min(nP, 3));
+  s.sorted.forEach((f, k) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "pick" + (isTrans(f) ? " trans" : "") + (isNoted(s, f) ? " noted" : ""); b.setAttribute("aria-pressed", String(k === pick)); b.setAttribute("aria-label", boardOf(s, f)[2] || "画面 @" + num(f)); b.title = boardOf(s, f)[2] || "";
+    const im = document.createElement("img"); im.src = "thumbs/" + f + ".jpg"; im.alt = ""; b.append(im);
+    { const sm = document.createElement("small"); sm.textContent = pickLabel(s, f); b.append(sm); }
+    b.addEventListener("click", () => { pick = k; render(); }); picks.append(b);
+  });
+
+  if (!dirty) $("note").value = fb[s.id].note;
+  paintStatus(); paintSaved();
+  [...reel.children].forEach((c, i) => c.setAttribute("aria-current", String(i === cur)));
+  const cell = reel.children[cur], sIn = document.querySelector(".strip-in");
+  if (cell && sIn && sIn.scrollWidth > sIn.clientWidth) { const cr = cell.getBoundingClientRect(), sr = sIn.getBoundingClientRect(); sIn.scrollTo({ left: Math.max(0, sIn.scrollLeft + cr.left - sr.left - (sr.width - cr.width) / 2), behavior: "smooth" }); }
+  checkOvf();
+  layoutScore();
+}
+document.querySelector(".side").addEventListener("scroll", checkOvf, { passive: true });
+$("more").addEventListener("toggle", checkOvf); addEventListener("resize", checkOvf);
+
+function paintStatus(){ const st = fb[SHOTS[cur].id].status; document.querySelectorAll(".status button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.st === st))); }
+function stamp(at){ return at ? "已保存 " + new Date(at).toLocaleTimeString("zh-CN", { hour:"2-digit", minute:"2-digit" }) : ""; }
+function paintSaved(){ const f = fb[SHOTS[cur].id]; $("saved").textContent = dirty ? "…" : stamp(f.at); }
+function paintProgress(){
+  let n = 0;
+  for (const s of SHOTS) { const st = fb[s.id].status; if (st === "ok" || st === "fix") n++;
+    const d = $("dot-" + s.id); d.className = st === "ok" ? "ok" : st === "fix" ? "fix" : ""; d.textContent = st === "ok" ? "✓" : st === "fix" ? "!" : "";
+    const bd = $("badge-" + s.id); bd.className = "badge " + (st === "ok" || st === "fix" ? st : ""); bd.textContent = st === "ok" ? "✓" : st === "fix" ? "!" : "";
+    $("gnote-" + s.id).textContent = st === "fix" ? fb[s.id].note : ""; }
+  $("prog").innerHTML = "<b>" + n + "</b> / " + SHOTS.length + " 已审";
+}
+function go(i){
+  clearTimeout(tNote);
+  if (dirty) save(SHOTS[cur].id);
+  clearTimeout(autoTimer);
+  cur = (i + SHOTS.length) % SHOTS.length; pick = mainIdx(SHOTS[cur]); dirty = false;
+  ls.set(KEY + "shot", SHOTS[cur].id); try { history.replaceState(null, "", "#" + SHOTS[cur].id); } catch {}
+  render();
+}
+function setStatus(st, fromKey){
+  clearTimeout(autoTimer);
+  const id = SHOTS[cur].id; fb[id].status = fromKey ? st : fb[id].status === st ? "" : st; paintStatus(); paintProgress(); save(id);
+  if (fb[id].status === "ok") autoTimer = setTimeout(() => { if (SHOTS[cur].id === id && fb[id].status === "ok" && cur < SHOTS.length - 1) go(cur + 1); }, 300);
+  if (fb[id].status === "fix") $("note").focus();
+}
+function setMode(m){
+  mode = m; $("v-review").hidden = m !== "review"; $("v-grid").hidden = m !== "grid"; document.body.classList.toggle("grid-mode", m === "grid");
+  $("m-review").setAttribute("aria-pressed", String(m === "review")); $("m-grid").setAttribute("aria-pressed", String(m === "grid")); ls.set(KEY + "mode", m);
+  if (m === "review") render();
+}
+const openSheet = (id) => { $(id).hidden = false; $(id).querySelector(".pill").focus(); };
+const closeSheet = (id) => { $(id).hidden = true; };
+
+$("prev").addEventListener("click", () => go(cur - 1));
+$("next").addEventListener("click", () => go(cur + 1));
+$("next2").addEventListener("click", () => go(cur + 1));
+$("m-review").addEventListener("click", () => setMode("review"));
+$("m-grid").addEventListener("click", () => setMode("grid"));
+$("open-notes").addEventListener("click", () => openSheet("sheet"));
+$("close-notes").addEventListener("click", () => closeSheet("sheet"));
+$("open-help").addEventListener("click", () => openSheet("help"));
+$("close-help").addEventListener("click", () => closeSheet("help"));
+for (const id of ["sheet", "help"]) $(id).addEventListener("click", (e) => { if (e.target === $(id)) closeSheet(id); });
+document.querySelectorAll(".status button").forEach((b) => b.addEventListener("click", () => setStatus(b.dataset.st)));
+$("more").open = ls.get(KEY + "more") === "1";
+$("more").addEventListener("toggle", () => ls.set(KEY + "more", $("more").open ? "1" : "0"));
+
+// 自动保存:停 600ms 或失焦
+let tNote = 0, tAll = 0;
+const isNoted = (s, f) => isTrans(f) ? /转场/.test((fb[s.id] && fb[s.id].note) || "") : notedSet(s).has(boardOf(s, f)[1]);
+function markNoted(){ const s = SHOTS[cur]; [...$("picks").children].forEach((b, k) => b.classList.toggle("noted", isNoted(s, s.sorted[k]))); }
+$("b-cite").addEventListener("click", () => {
+  const s = SHOTS[cur], bd = boardOf(s, s.sorted[pick]), t = $("note"), tag = isTrans(bd[0]) ? "转场 " + bd[2].split("。")[0] + ":" : bd[1] + " " + bd[2] + ":";
+  const pre = t.value && !t.value.endsWith("\n") ? "\n" : ""; t.value += pre + tag; t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.dispatchEvent(new Event("input"));
+});
+$("note").addEventListener("input", () => { const id = SHOTS[cur].id; fb[id].note = $("note").value; markNoted(); dirty = true; paintSaved(); clearTimeout(tNote); tNote = setTimeout(() => save(id), 600); });
+$("note").addEventListener("blur", () => { clearTimeout(tNote); if (dirty) save(SHOTS[cur].id); });
+$("note").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save(SHOTS[cur].id); } if (e.key === "Escape") $("note").blur(); });
+$("note-all").addEventListener("input", () => { fb._all.note = $("note-all").value; dirtyAll = true; $("saved-all").textContent = "…"; clearTimeout(tAll); tAll = setTimeout(() => save("_all"), 600); });
+$("note-all").addEventListener("blur", () => { clearTimeout(tAll); if (dirtyAll) save("_all"); });
+
+document.addEventListener("keydown", (e) => {
+  for (const id of ["sheet", "help"]) if (!$(id).hidden) { if (e.key === "Escape") closeSheet(id); return; }
+  const typing = /^(TEXTAREA|INPUT)$/.test(document.activeElement && document.activeElement.tagName);
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "?") { openSheet("help"); return; }
+  if (mode !== "review") return;
+  const s = SHOTS[cur], n = s.sorted.length;
+  if (e.key === "ArrowRight") { e.preventDefault(); go(cur + 1); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); go(cur - 1); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); pick = (pick + 1) % n; render(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); pick = (pick - 1 + n) % n; render(); }
+  else if (e.key === "[" || e.key === "]") { e.preventDefault(); pick = (pick + (e.key === "]" ? 1 : -1) + n) % n; render(); }
+  else if (e.key === "1") setStatus("ok", true); else if (e.key === "2") { e.preventDefault(); setStatus("fix", true); } else if (e.key === "3") setStatus("wait", true);
+});
+
+// ---------- 意见存储:feedback/<镜头号>,整体意见 feedback/_all(沿用上一版的数据) ----------
+let db = null;
+async function save(id){
+  const isAll = id === "_all"; const f = fb[id];
+  const note = (f.note || "").trim();
+  if (!db) { $("warn").hidden = false; $("warn").textContent = "本地审核服务没连上：先运行 review/serve_local.py，再从 http://localhost:端口/ 打开"; return; }
+  try {
+    const at = new Date().toISOString();
+    await db.doc("feedback/" + id).set({ shot: id, status: f.status || "", note, updatedAt: at });
+    f.at = at;
+    if (isAll) { dirtyAll = false; $("saved-all").textContent = stamp(at); } else if (SHOTS[cur].id === id && $("note").value.trim() === note) { dirty = false; paintSaved(); }
+    $("warn").hidden = true; $("warn").classList.remove("err"); paintProgress();
+  } catch (err) {
+    $("warn").hidden = false; $("warn").classList.add("err"); $("warn").textContent = err && err.code === "invalid_argument" ? "意见存不上（服务返回错误）" : "意见没存上：确认 serve_local.py 还在运行，再改一下就会重试";
+  }
+}
+(async function(){
+  db = {
+    doc: (path) => ({ set: async (v) => { const id = path.split("/").pop(); const r = await fetch("/api/feedback/" + encodeURIComponent(id), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(v) }); if (!r.ok) throw new Error("save " + r.status); } }),
+    collection: () => ({ onSnapshot: (cb, onErr) => {
+      let last = "";
+      const tick = async () => { try { const r = await fetch("/api/feedback", { cache: "no-store" }); if (!r.ok) throw new Error("load " + r.status); const j = await r.json(); const s = JSON.stringify(j); if (s !== last) { last = s; cb({ docs: Object.entries(j).map(([id, v]) => ({ id, data: () => v })) }); } } catch (e) { onErr && onErr(e); } };
+      tick(); setInterval(tick, 2500);
+    } }),
+  };
+  db.collection("feedback").onSnapshot((snap) => {
+    for (const d of snap.docs) { const v = d.data(); const f = fb[d.id]; if (!f || !v) continue;
+      const editing = (d.id === "_all" && dirtyAll) || (SHOTS[cur] && d.id === SHOTS[cur].id && dirty);
+      f.status = typeof v.status === "string" ? v.status : ""; if (!editing) f.note = typeof v.note === "string" ? v.note : ""; f.at = typeof v.updatedAt === "string" ? v.updatedAt : "";
+      if (d.id === "_all" && !dirtyAll && document.activeElement !== $("note-all")) { $("note-all").value = f.note; $("saved-all").textContent = stamp(f.at); } }
+    if (!dirty && document.activeElement !== $("note")) $("note").value = fb[SHOTS[cur].id].note;
+    paintStatus(); paintSaved(); paintProgress();
+  }, () => { $("warn").hidden = false; $("warn").textContent = "连不上本地审核服务（serve_local.py 停了？），重启后刷新页面"; });
+})();
+
+setMode(ls.get(KEY + "mode") === "grid" ? "grid" : "review");
+paintProgress();
+if (ls.get(KEY + "notes-seen") !== VERSION) { ls.set(KEY + "notes-seen", VERSION); openSheet("sheet"); }
+</script>

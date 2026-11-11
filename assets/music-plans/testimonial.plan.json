@@ -1,0 +1,138 @@
+{
+ "composition_plan": {
+  "positive_global_styles": [
+   "premium modern brand film music for a jet ski powersports lifestyle documentary",
+   "cinematic electronic pop with punchy drums, deep bass, bright synth plucks and clean electric guitar",
+   "strong dynamic contrast between quiet sections and big sections",
+   "sits under a spoken Chinese interview in quiet sections",
+   "no vocals",
+   "one consistent palette and key for the whole piece",
+   "118 BPM"
+  ],
+  "negative_global_styles": [
+   "vocals",
+   "choir",
+   "lo-fi hiss",
+   "sad",
+   "horror",
+   "dubstep wobble",
+   "fade out ending",
+   "traditional chinese instruments",
+   "abrupt stop"
+  ],
+  "sections": [
+   {
+    "section_name": "Countdown",
+    "positive_local_styles": [
+     "tense rising riser and ticking, building anticipation, no drums"
+    ],
+    "negative_local_styles": [
+     "drums"
+    ],
+    "duration_ms": 3000,
+    "lines": []
+   },
+   {
+    "section_name": "Opening drop",
+    "positive_local_styles": [
+     "huge impact on the first beat, full energetic drums and bass, aggressive and cool, fast energy"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 15000,
+    "lines": []
+   },
+   {
+    "section_name": "Story verse",
+    "positive_local_styles": [
+     "drop to soft groove, light kick and muted guitar, warm pad, lots of space for voice"
+    ],
+    "negative_local_styles": [
+     "big drums",
+     "busy melody"
+    ],
+    "duration_ms": 30000,
+    "lines": []
+   },
+   {
+    "section_name": "Build to power",
+    "positive_local_styles": [
+     "short snare build-up rising into a punchy mini drop, then settle back"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 12000,
+    "lines": []
+   },
+   {
+    "section_name": "Product groove",
+    "positive_local_styles": [
+     "clean bouncy premium groove, plucky synth, light percussion, positive, under voice"
+    ],
+    "negative_local_styles": [
+     "heavy drums"
+    ],
+    "duration_ms": 40000,
+    "lines": []
+   },
+   {
+    "section_name": "Engine hit",
+    "positive_local_styles": [
+     "sudden heavy hit, roaring bass and fast hats for a few bars, then cut back to groove"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 8000,
+    "lines": []
+   },
+   {
+    "section_name": "Benefits groove",
+    "positive_local_styles": [
+     "warm steady groove, soft drums, gentle guitar, trustworthy, under voice"
+    ],
+    "negative_local_styles": [
+     "big build"
+    ],
+    "duration_ms": 36000,
+    "lines": []
+   },
+   {
+    "section_name": "Playful",
+    "positive_local_styles": [
+     "playful bouncy rhythm with claps, a bit cheeky and fun"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 26000,
+    "lines": []
+   },
+   {
+    "section_name": "Together",
+    "positive_local_styles": [
+     "warm emotional lift, layers stacking, community and joy, growing"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 24000,
+    "lines": []
+   },
+   {
+    "section_name": "Anthem",
+    "positive_local_styles": [
+     "full anthemic climax, big drums, bright synths, triumphant and proud"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 14000,
+    "lines": []
+   },
+   {
+    "section_name": "Ending",
+    "positive_local_styles": [
+     "final big hit and a clean ringing final chord that decays naturally over four seconds"
+    ],
+    "negative_local_styles": [
+     "fade out",
+     "new melody",
+     "abrupt stop"
+    ],
+    "duration_ms": 6000,
+    "lines": []
+   }
+  ]
+ }
+}

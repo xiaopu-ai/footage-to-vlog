@@ -1,0 +1,9 @@
+# 厂商 LUT 不随仓库分发：安装后跑 scripts/fetch_luts.sh 下载
+assets/luts/*.cube
+# 运行产物
+__pycache__/
+*.pyc
+template/node_modules/
+template/out/
+template/work/
+.DS_Store

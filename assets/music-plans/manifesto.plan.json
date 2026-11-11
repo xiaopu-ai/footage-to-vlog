@@ -1,0 +1,96 @@
+{
+ "composition_plan": {
+  "positive_global_styles": [
+   "bright melodic house for a premium jet ski lifestyle brand film, tasteful not cheesy",
+   "piano chords, plucky synth lead hook, four-on-the-floor kick, shimmering hi-hats, warm bass",
+   "sea breeze, summer water, freedom and joy",
+   "120 BPM, steady tempo, 4/4",
+   "clear energy steps, never flat",
+   "no vocals"
+  ],
+  "negative_global_styles": [
+   "vocals",
+   "choir",
+   "singing",
+   "epic trailer",
+   "war",
+   "military drums",
+   "taiko",
+   "brass fanfare",
+   "dark",
+   "orchestral battle",
+   "slow ambient intro",
+   "long intro",
+   "sad",
+   "horror",
+   "lo-fi hiss",
+   "fade out ending",
+   "tempo change",
+   "edm drop",
+   "dubstep"
+  ],
+  "sections": [
+   {
+    "section_name": "Hook from bar one",
+    "positive_local_styles": [
+     "the main hook and a light groove start immediately on the first beat, already catchy, bright"
+    ],
+    "negative_local_styles": [
+     "silence",
+     "pads only"
+    ],
+    "duration_ms": 5000,
+    "lines": []
+   },
+   {
+    "section_name": "Departure",
+    "positive_local_styles": [
+     "groove locks in with bass, motif repeats, carefree and moving forward"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 10000,
+    "lines": []
+   },
+   {
+    "section_name": "Together",
+    "positive_local_styles": [
+     "fuller, extra percussion and claps, a second melodic layer answers the hook, energy steps up"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 10000,
+    "lines": []
+   },
+   {
+    "section_name": "On the water",
+    "positive_local_styles": [
+     "peak drive, full drums and bass, hook played big, exciting and fast feeling, last bar builds up"
+    ],
+    "negative_local_styles": [
+     "breakdown"
+    ],
+    "duration_ms": 15000,
+    "lines": []
+   },
+   {
+    "section_name": "Life anthem",
+    "positive_local_styles": [
+     "the biggest and most euphoric chorus, wide and open, joyful freedom"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 12000,
+    "lines": []
+   },
+   {
+    "section_name": "Final stance",
+    "positive_local_styles": [
+     "short breakdown with hook alone for two bars, then one big final hit on a downbeat that rings out naturally"
+    ],
+    "negative_local_styles": [
+     "fade out"
+    ],
+    "duration_ms": 12000,
+    "lines": []
+   }
+  ]
+ }
+}

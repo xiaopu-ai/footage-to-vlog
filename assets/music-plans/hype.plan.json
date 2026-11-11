@@ -1,0 +1,88 @@
+{
+ "composition_plan": {
+  "positive_global_styles": [
+   "dark aggressive electronic hybrid for a powersports jet ski brand hype film",
+   "distorted gritty reese bass, punchy hard-hitting drums, cinematic impacts, cold and edgy",
+   "strong dynamic contrast between sections",
+   "no vocals",
+   "one key for the whole piece",
+   "124 BPM, 4/4"
+  ],
+  "negative_global_styles": [
+   "vocals",
+   "choir",
+   "spoken words",
+   "lo-fi hiss",
+   "sad",
+   "horror",
+   "dubstep wobble",
+   "fade out ending",
+   "traditional chinese instruments",
+   "tempo change",
+   "half-time feel in the drop"
+  ],
+  "sections": [
+   {
+    "section_name": "Dark intro",
+    "positive_local_styles": [
+     "dark cold atmospheric drone, sparse deep sub-bass impacts about every two bars, metallic textures and distant engine-like rumble, no drums, no steady beat"
+    ],
+    "negative_local_styles": [
+     "drums",
+     "hi-hats",
+     "melody"
+    ],
+    "duration_ms": 10000,
+    "lines": []
+   },
+   {
+    "section_name": "Build",
+    "positive_local_styles": [
+     "drums kick in with a fast accelerating snare roll and a steep rising noise riser, tension climbing hard into the drop"
+    ],
+    "negative_local_styles": [
+     "drop",
+     "silence"
+    ],
+    "duration_ms": 4000,
+    "lines": []
+   },
+   {
+    "section_name": "Drop",
+    "positive_local_styles": [
+     "huge impact exactly on the first beat, pounding drums with distorted reese bass and sharp syncopated synth stabs, full energy for the whole section, constant tempo"
+    ],
+    "negative_local_styles": [
+     "breakdown",
+     "quiet"
+    ],
+    "duration_ms": 20000,
+    "lines": []
+   },
+   {
+    "section_name": "Breakdown",
+    "positive_local_styles": [
+     "kick and bass drop out completely, only a mid-range synth motif and airy pad remain, open space, same key and tempo"
+    ],
+    "negative_local_styles": [
+     "kick",
+     "sub bass"
+    ],
+    "duration_ms": 6000,
+    "lines": []
+   },
+   {
+    "section_name": "Final hit",
+    "positive_local_styles": [
+     "one last massive full-band impact on the first beat, then a clean ringing tail that decays naturally, definitive ending"
+    ],
+    "negative_local_styles": [
+     "fade out",
+     "new melody"
+    ],
+    "duration_ms": 4000,
+    "lines": []
+   }
+  ]
+ }
+}

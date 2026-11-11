@@ -1,0 +1,119 @@
+{
+ "composition_plan": {
+  "positive_global_styles": [
+   "dark premium automotive product launch trailer music",
+   "modern hybrid trailer: hard four-on-the-floor kick, tight snare, pulsing distorted synth bass, metallic impacts",
+   "very clear rhythmic transients that are easy to cut picture to",
+   "big dynamic contrast between sections",
+   "no vocals",
+   "128 BPM, steady tempo, never half-time",
+   "one key for the whole piece"
+  ],
+  "negative_global_styles": [
+   "vocals",
+   "choir",
+   "lo-fi hiss",
+   "cheerful",
+   "tropical house",
+   "traditional chinese instruments",
+   "fade in",
+   "slow intro",
+   "ambient intro",
+   "fade out ending",
+   "comedic"
+  ],
+  "sections": [
+   {
+    "section_name": "Cold open",
+    "positive_local_styles": [
+     "starts instantly at 0.0 s with a massive cinematic impact hit, no fade-in",
+     "a pulsing 16th-note synth bass and ticking hi-hat at 128 BPM from the first second",
+     "a heavy impact on the first beat of the second bar",
+     "short riser at the end"
+    ],
+    "negative_local_styles": [
+     "ambient drone",
+     "slow build",
+     "silence"
+    ],
+    "duration_ms": 3750,
+    "lines": []
+   },
+   {
+    "section_name": "Drums in",
+    "positive_local_styles": [
+     "full drums enter on the first beat: tight punchy kick, crisp snare, fast hi-hats",
+     "a snare roll in the last bar building straight into the drop"
+    ],
+    "negative_local_styles": [
+     "breakdown"
+    ],
+    "duration_ms": 3750,
+    "lines": []
+   },
+   {
+    "section_name": "Drop",
+    "positive_local_styles": [
+     "huge impact exactly on the first beat",
+     "hard four-on-the-floor kick on every beat, snare on beats 2 and 4, heavy distorted sub bass",
+     "aggressive, dark, relentless, no breakdown"
+    ],
+    "negative_local_styles": [
+     "filter",
+     "breakdown"
+    ],
+    "duration_ms": 7500,
+    "lines": []
+   },
+   {
+    "section_name": "Feature hits",
+    "positive_local_styles": [
+     "the same full four-on-the-floor groove continues without any break",
+     "a big punchy cinematic accent hit on the downbeat of every bar, five bars in a row"
+    ],
+    "negative_local_styles": [
+     "breakdown",
+     "silence",
+     "filter",
+     "new melody"
+    ],
+    "duration_ms": 9375,
+    "lines": []
+   },
+   {
+    "section_name": "Riser into title hit",
+    "positive_local_styles": [
+     "first bar: rising tension, snare roll and riser accelerating, the last beat cuts to a split second of silence",
+     "second bar: one massive cinematic hit on the first beat with a long metallic tail over the pulse"
+    ],
+    "negative_local_styles": [],
+    "duration_ms": 3750,
+    "lines": []
+   },
+   {
+    "section_name": "Finale",
+    "positive_local_styles": [
+     "a wide sustained dark heroic chord over a soft pulse",
+     "premium and confident"
+    ],
+    "negative_local_styles": [
+     "drum fill"
+    ],
+    "duration_ms": 3750,
+    "lines": []
+   },
+   {
+    "section_name": "Outro",
+    "positive_local_styles": [
+     "a final big hit on the first beat that rings out and decays naturally to silence"
+    ],
+    "negative_local_styles": [
+     "new melody",
+     "drums"
+    ],
+    "duration_ms": 3500,
+    "lines": []
+   }
+  ]
+ }
+}

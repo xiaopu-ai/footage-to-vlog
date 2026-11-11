@@ -1,0 +1,17 @@
+{
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "duration": 90,
+  "style": "custom",
+  "fonts": {},
+  "brand": { "accent": "#FF7A1A" },
+  "shots": [],
+  "texts": [
+    { "id": "hint", "type": "reveal", "from": 0, "to": 90, "text": "python3 scripts/timeline.py <proj>  →  src/timeline.json", "size": 40, "font": "sans" }
+  ],
+  "captions": [],
+  "audio": { "music": null, "sfx": [], "voice": [] },
+  "clips": [],
+  "lint": { "errors": [], "warnings": [] }
+}

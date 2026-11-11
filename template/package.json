@@ -1,0 +1,24 @@
+{
+  "name": "footage-to-vlog-film",
+  "version": "1.0.0",
+  "private": true,
+  "description": "footage-to-vlog 的 Remotion 模板：只读 src/timeline.json，把剪辑数据渲染成片",
+  "scripts": {
+    "studio": "remotion studio",
+    "typecheck": "tsc --noEmit",
+    "render": "remotion render src/index.ts Film out/film.mp4 --gl=angle --concurrency=4 --timeout=1800000 --bundle-cache=false",
+    "stills": "node tools/stills.mjs"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.469",
+    "@remotion/cli": "4.0.469",
+    "@remotion/renderer": "4.0.469",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.469"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "typescript": "5.9.3"
+  }
+}

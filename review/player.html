@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<!-- footage-to-vlog 媒体审核页模板：review/local_page.py 的 build_player() 把 page.json 填进标题、顶栏、「本版改动」面板和 PAGE 数据行。
+     审配乐候选、节奏预演、成片这些「要听 / 要看动起来」的东西；分镜静帧仍用 template.html。
+     视觉沿用 template.html（浅色 / 深色、大画面、右侧窄栏、底部条目条、键盘 1 / 2 / 3）；意见存 serve_local.py 的 /api/feedback。 -->
+<style>
+[hidden]{display:none!important}
+:root{
+  --bg:#F5F5F7; --panel:#FFFFFF; --ink:#1D1D1F; --sub:#6E6E73; --hair:#D2D2D7;
+  --well:rgba(118,118,128,.12); --knob:#FFFFFF; --field:#EDEDF0;
+  --blue:#0071E3; --ok:#1E8E3E; --fix:#C9520A; --stage:#000000; --glass:rgba(245,245,247,.8);
+  --wave:#8E8E93; --wave-done:#0071E3;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB","Noto Sans SC","Helvetica Neue",sans-serif;
+  --display:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC","Hiragino Sans GB","Noto Sans SC","Helvetica Neue",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  --bar:44px; --side:300px; --gut:20px; --strip:84px; --trans:76px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#000000; --panel:#1C1C1E; --ink:#F5F5F7; --sub:#98989D; --hair:#38383A;
+  --well:rgba(118,118,128,.24); --knob:#636366; --field:#1C1C1E;
+  --blue:#2997FF; --ok:#30D158; --fix:#FF9F0A; --stage:#000000; --glass:rgba(22,22,23,.8);
+  --wave:#636366; --wave-done:#2997FF; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#000000; --panel:#1C1C1E; --ink:#F5F5F7; --sub:#98989D; --hair:#38383A;
+  --well:rgba(118,118,128,.24); --knob:#636366; --field:#1C1C1E;
+  --blue:#2997FF; --ok:#30D158; --fix:#FF9F0A; --stage:#000000; --glass:rgba(22,22,23,.8);
+  --wave:#636366; --wave-done:#2997FF; color-scheme:dark}
+@media (min-width:1600px){:root{--side:340px}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);margin:0;-webkit-font-smoothing:antialiased;min-height:100dvh;display:flex;flex-direction:column}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+svg{display:block}
+
+/* 顶栏（同 template.html） */
+.bar{position:sticky;top:0;z-index:20;height:var(--bar);flex:none;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;padding-inline:var(--gut);
+  background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:.5px solid var(--hair)}
+.brand{display:flex;align-items:baseline;gap:10px;min-width:0}
+.brand b{font:600 15px var(--display);white-space:nowrap}
+.brand span{font-size:12px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.segctl{display:inline-flex;background:var(--well);border-radius:9px;padding:2px}
+.segctl button{border:0;background:transparent;height:28px;padding:0 16px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer}
+.segctl button[aria-pressed="true"]{background:var(--knob);box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
+.right{display:flex;justify-content:flex-end;align-items:center;gap:14px}
+.prog{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;white-space:nowrap}
+.prog b{color:var(--ink);font-weight:600}
+.tlink{border:0;background:transparent;color:var(--blue);font-size:13px;cursor:pointer;padding:4px 0;white-space:nowrap}
+.help{width:24px;height:24px;border-radius:50%;border:0;background:var(--well);font-size:13px;font-weight:600;color:var(--sub);cursor:pointer}
+
+/* 播放区 */
+main{flex:1;container-type:inline-size}
+#v-review{display:flex;flex-direction:column;justify-content:center}
+@media (min-width:1001px){body:not(.grid-mode){height:100dvh;overflow:hidden}}
+.review{display:flex;justify-content:center;align-items:flex-start;gap:20px;padding:12px var(--gut)}
+.stage{flex:none;width:min(calc(100cqw - var(--side) - 20px - 2 * var(--gut)), calc((100dvh - var(--bar) - var(--strip) - var(--trans) - 40px) * 16 / 9));min-width:0}
+.screen{position:relative;width:100%;aspect-ratio:16/9;background:var(--stage);border-radius:12px;overflow:hidden}
+.screen video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--stage);display:block}
+.aud{position:absolute;inset:0;display:grid;grid-template-rows:auto 1fr auto;padding:5% 5% 4%;color:#F5F5F7;
+  background:radial-gradient(120% 90% at 50% 0%,#1d1d22 0%,#000 70%)}
+.aud .nm{font:600 clamp(18px,3.2cqw,40px)/1.15 var(--display);letter-spacing:-.01em;word-break:break-all}
+.aud .ch{font-size:clamp(12px,1.3cqw,16px);color:#98989D;margin-top:6px;min-height:1.5em}
+.aud canvas{width:100%;height:100%;display:block;cursor:pointer;align-self:center;max-height:62%}
+.aud .tm{font:500 clamp(14px,2cqw,26px) var(--mono);font-variant-numeric:tabular-nums;color:#F5F5F7}
+.aud .tm span{color:#98989D}
+.big-play{position:absolute;inset:0;margin:auto;width:72px;height:72px;border-radius:50%;border:0;cursor:pointer;display:grid;place-items:center;color:#fff;
+  background:rgba(30,30,30,.45);backdrop-filter:blur(16px) saturate(180%);-webkit-backdrop-filter:blur(16px) saturate(180%);transition:opacity .2s}
+.screen.playing .big-play{opacity:0;pointer-events:none}
+.transport{display:grid;grid-template-columns:36px auto 1fr;gap:10px;align-items:center;height:var(--trans);padding-top:8px}
+.pp{width:36px;height:36px;border-radius:50%;border:0;background:var(--well);cursor:pointer;display:grid;place-items:center}
+.time{font:500 13px var(--mono);font-variant-numeric:tabular-nums;color:var(--sub);white-space:nowrap}
+.time b{color:var(--ink);font-weight:600}
+.tl{position:relative;height:56px;min-width:0}
+.tl canvas{width:100%;height:100%;display:block;cursor:pointer;border-radius:6px}
+.transport.audio-mode .tl{visibility:hidden}
+
+/* 审片栏 */
+.side{flex:none;width:var(--side);display:grid;gap:14px;align-content:start;max-height:calc(100dvh - var(--bar) - var(--strip) - 28px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+.side::-webkit-scrollbar{display:none}
+.sid{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sid b{font:600 24px/1.15 var(--display);letter-spacing:-.01em;word-break:break-all}
+.meta{font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums;margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px}
+.desc{margin:0;font:400 15px/1.6 var(--display);text-wrap:pretty}
+.jumps{display:grid;gap:2px;max-height:220px;overflow-y:auto}
+.jumps h4{margin:0 0 4px;font-size:12px;font-weight:500;color:var(--sub)}
+.jump{display:grid;grid-template-columns:56px 1fr;gap:8px;align-items:baseline;text-align:left;border:0;background:transparent;padding:4px 6px;border-radius:6px;cursor:pointer;font-size:13px}
+.jump code{font:12px var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+.jump:hover{background:var(--well)} .jump[aria-current="true"]{background:var(--well);font-weight:600}
+.jump.sec code{color:var(--blue)}
+.status-row{display:grid;grid-template-columns:1fr 36px;gap:8px;align-items:center}
+.status{display:grid;grid-template-columns:repeat(3,1fr);background:var(--well);border-radius:9px;padding:2px}
+.status button{border:0;background:transparent;height:32px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer}
+.status button[aria-pressed="true"]{background:var(--knob);box-shadow:0 1px 3px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
+.status button.ok[aria-pressed="true"]{color:var(--ok)} .status button.fix[aria-pressed="true"]{color:var(--fix)}
+.nextbtn{width:36px;height:36px;border:0;border-radius:50%;background:var(--well);cursor:pointer;display:grid;place-items:center}
+.notebox{position:relative}
+textarea{display:block;width:100%;min-height:96px;max-height:240px;field-sizing:content;resize:none;border:.5px solid var(--hair);border-radius:10px;background:var(--field);color:var(--ink);font:15px/1.55 var(--sans);padding:10px 12px 22px}
+textarea:focus{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 35%,transparent);border-color:var(--blue)}
+textarea::placeholder{color:var(--sub)}
+.saved{position:absolute;right:10px;bottom:6px;font-size:12px;color:var(--sub);pointer-events:none}
+.tools{display:flex;gap:14px;align-items:center;font-size:13px}
+.tools a,.tools button{color:var(--blue);text-decoration:none;border:0;background:none;padding:0;cursor:pointer;font-size:13px}
+.played{font-size:12px;color:var(--sub)}
+.warn{font-size:12px;color:var(--sub)} .warn.err{color:var(--fix)}
+
+/* 条目条 */
+.strip{position:sticky;bottom:0;z-index:15;flex:none;margin-top:auto;padding:8px var(--gut) calc(8px + env(safe-area-inset-bottom,0px));background:var(--glass);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-top:.5px solid var(--hair)}
+.reel{display:flex;gap:6px;overflow-x:auto}
+.cell{position:relative;flex:1 0 170px;max-width:320px;height:64px;border:0;border-radius:8px;cursor:pointer;background:var(--panel);box-shadow:0 0 0 .5px var(--hair) inset;
+  display:grid;grid-template-columns:28px 1fr;gap:8px;align-items:center;padding:0 10px;text-align:left}
+.cell .k{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--well);color:var(--sub)}
+.cell b{display:block;font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell small{display:block;font:11px var(--mono);color:var(--sub);font-variant-numeric:tabular-nums}
+.cell[aria-current="true"]{box-shadow:0 0 0 2px var(--blue) inset}
+.cell i{position:absolute;right:6px;top:6px;width:16px;height:16px;border-radius:50%;display:none;place-items:center;font-size:9px;font-style:normal;font-weight:700;color:#fff}
+.cell i.ok{display:grid;background:var(--ok)} .cell i.fix{display:grid;background:var(--fix)}
+
+/* 总览 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr));gap:16px;padding:20px var(--gut) 48px}
+.overall{grid-column:1/-1;display:grid;gap:8px;max-width:720px}
+.overall h3{margin:0;font:600 21px var(--display)}
+#note-all{min-height:44px}
+#note-all:focus{min-height:120px}
+.card{border:0;padding:14px 16px;border-radius:12px;background:var(--panel);box-shadow:0 0 0 .5px var(--hair) inset;text-align:left;cursor:pointer;display:grid;gap:4px}
+.card .cap{display:flex;align-items:baseline;gap:8px}
+.card .cap b{font:600 17px var(--display);word-break:break-all}
+.card .cap span{font-size:13px;color:var(--sub);white-space:nowrap}
+.card .st{font-size:13px;font-weight:600} .card .st.ok{color:var(--ok)} .card .st.fix{color:var(--fix)}
+.card .note{font-size:13px;color:var(--sub);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+body.grid-mode .strip{display:none}
+
+/* 弹层 */
+.sheet{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.32);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:grid;place-items:center;padding:20px}
+.sheet .pane{background:var(--panel);border-radius:14px;max-width:640px;width:100%;max-height:86dvh;overflow:auto;padding:24px 26px;box-shadow:0 20px 60px rgba(0,0,0,.3);display:grid;gap:12px}
+.sheet h3{margin:0;font:600 21px var(--display)}
+.sheet p.sub{margin:0;color:var(--sub);font-size:13px}
+.sheet ol,.sheet ul{margin:0;padding-left:20px;display:grid;gap:7px;font-size:15px}
+.sheet kbd{font:12px var(--sans);border:.5px solid var(--hair);border-bottom-width:1.5px;border-radius:5px;padding:1px 6px;background:var(--bg)}
+.sheet .row{display:flex;justify-content:flex-end}
+.pill{border:0;background:var(--blue);color:#fff;border-radius:999px;height:34px;padding:0 20px;font-size:14px;font-weight:500;cursor:pointer}
+
+@media (max-width:1000px){
+  .review{flex-direction:column;align-items:center}
+  .stage{width:min(100%, calc(50dvh * 16 / 9))}
+  .side{width:min(100%, calc(50dvh * 16 / 9));max-height:none;overflow:visible}
+  .strip{position:static}
+  .brand span{display:none}
+}
+@media (max-width:560px){
+  :root{--gut:16px}
+  .brand{display:none}
+  .bar{grid-template-columns:auto 1fr auto}
+  .stage{width:100%}
+  .screen{margin-inline:calc(-1 * var(--gut));width:calc(100% + 2 * var(--gut));border-radius:0}
+  .cell{flex-basis:140px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<header class="bar">
+  <div class="brand"><b>__TITLE__</b><span>__BRAND__</span></div>
+  <div class="segctl" role="group" aria-label="视图"><button type="button" id="m-review" aria-pressed="true">逐条</button><button type="button" id="m-grid" aria-pressed="false">总览</button></div>
+  <div class="right"><span class="prog" id="prog" aria-live="polite"><b>0</b> / __N__ 已审</span><button class="tlink" type="button" id="open-notes">本版改动</button><button class="help" type="button" id="open-help" aria-label="快捷键">?</button></div>
+</header>
+
+<main id="v-review">
+  <section class="review">
+    <div class="stage">
+      <div class="screen" id="screen">
+        <div class="aud" id="aud" hidden><div><div class="nm" id="a-name"></div><div class="ch" id="a-ch"></div></div><canvas id="a-wave" aria-label="波形，点击跳转"></canvas><div class="tm" id="a-time"></div></div>
+        <button class="big-play" type="button" id="big-play" aria-label="播放"><svg width="26" height="28" viewBox="0 0 26 28" aria-hidden="true"><path d="M4 2.5v23l20-11.5z" fill="currentColor"/></svg></button>
+      </div>
+      <div class="transport" id="transport">
+        <button class="pp" type="button" id="pp" aria-label="播放 / 暂停"></button>
+        <span class="time" id="time"><b>0:00.0</b> / 0:00.0</span>
+        <div class="tl"><canvas id="tl" aria-label="进度和波形，点击跳转"></canvas></div>
+      </div>
+    </div>
+    <aside class="side" aria-label="审片">
+      <div><div class="sid"><b id="s-name"></b></div><div class="meta" id="s-meta"></div></div>
+      <p class="desc" id="s-desc" hidden></p>
+      <div class="jumps" id="jumps" hidden></div>
+      <div class="status-row">
+        <div class="status" role="group" aria-label="审片结论">
+          <button type="button" class="ok" data-st="ok">通过</button>
+          <button type="button" class="fix" data-st="fix">要改</button>
+          <button type="button" class="wait" data-st="wait">待定</button>
+        </div>
+        <button class="nextbtn" type="button" id="next2" aria-label="下一条"><svg width="8" height="13" viewBox="0 0 8 13" aria-hidden="true"><path d="m1.5 1.5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="notebox"><textarea id="note" aria-label="修改意见" placeholder="意见（可写时间，如 0:12；点「记下当前时间」插入）"></textarea><span class="saved" id="saved"></span></div>
+      <div class="tools"><button type="button" id="cite">记下当前时间</button><a id="dl" download>下载</a><span class="played" id="played"></span></div>
+      <span class="warn" id="warn" hidden></span>
+    </aside>
+  </section>
+</main>
+
+<main id="v-grid" hidden>
+  <section class="grid" id="grid">
+    <div class="overall">
+      <h3>整体意见</h3>
+      <div class="notebox"><textarea id="note-all" aria-label="整体意见" placeholder="对这一轮（配乐 / 节奏 / 成片）的整体意见或下一步"></textarea><span class="saved" id="saved-all"></span></div>
+    </div>
+  </section>
+</main>
+
+<nav class="strip" aria-label="全部条目"><div class="reel" id="reel"></div></nav>
+
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-h">
+  <div class="pane">
+    <h3 id="sheet-h">这一轮看什么</h3>
+    <p class="sub">__SUB__</p>
+    <ol>
+__NOTES__
+    </ol>
+    <div class="row"><button class="pill" type="button" id="close-notes">开始</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="help" hidden role="dialog" aria-modal="true" aria-labelledby="help-h">
+  <div class="pane">
+    <h3 id="help-h">快捷键</h3>
+    <ul>
+      <li><kbd>空格</kbd> 或 <kbd>K</kbd> 播放 / 暂停 · <kbd>J</kbd> <kbd>L</kbd> 后退 / 前进 5 秒</li>
+      <li><kbd>←</kbd> <kbd>→</kbd> 上一条 / 下一条 · <kbd>↑</kbd> <kbd>↓</kbd> 跳到上一个 / 下一个段落或重点</li>
+      <li><kbd>1</kbd> 通过（0.3 秒后到下一条） · <kbd>2</kbd> 要改（光标进意见框） · <kbd>3</kbd> 待定</li>
+      <li>点波形跳转；意见自动保存；<kbd>Esc</kbd> 离开意见框</li>
+    </ul>
+    <div class="row"><button class="pill" type="button" id="close-help">好</button></div>
+  </div>
+</div>
+
+<script>
+// 页面数据：local_page.py 从 page.json 生成，整块替换下面这一行 PAGE 的 JSON
+const PAGE = /*PAGE*/{"slug":"ftv-media","version":"v0","items":[]}/*END*/;
+const ITEMS = PAGE.items || [], VERSION = PAGE.version, KEY = (PAGE.slug || "ftv-media") + "-";
+const $ = (id) => document.getElementById(id);
+const fmt = (t) => { if (!isFinite(t)) return "–"; const m = Math.floor(t / 60); return m + ":" + (t - m * 60).toFixed(1).padStart(4, "0"); };
+const ls = { get(k){ try { return localStorage.getItem(k); } catch { return null; } }, set(k, v){ try { localStorage.setItem(k, v); } catch {} } };
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const ICON = { audio: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 5v4M5 2.5v9M8 4v6M11 1.5v11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+               video: '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1.5" y="3" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9.5 6 12.5 4v6l-3-2" fill="currentColor"/></svg>' };
+const PLAY = '<svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M1.5 1v12l10-6z" fill="currentColor"/></svg>';
+const PAUSE = '<svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1h3v12H2zM7 1h3v12H7z" fill="currentColor"/></svg>';
+const fb = {}; for (const it of ITEMS) fb[it.id] = { status:"", note:"", at:"", played:0 }; fb._all = { status:"", note:"", at:"" };
+let cur = 0, mode = "review", dirty = false, dirtyAll = false, autoTimer = 0, el = null, raf = 0;
+{ const h = decodeURIComponent((location.hash || "").slice(1)); const i = ITEMS.findIndex((x) => x.id === h); const k = ITEMS.findIndex((x) => x.id === ls.get(KEY + "item")); cur = i >= 0 ? i : k >= 0 ? k : 0; }
+
+// 段落 + 重点合成一张跳转表：[秒, 说明, 是段落?, 止秒]
+const jumpsOf = (it) => [...(it.chapters || []).map(([a, b, n]) => [a, n, true, b]), ...(it.marks || []).map(([t, n]) => [t, n, false, t])].sort((x, y) => x[0] - y[0]);
+const durOf = (it) => (el && isFinite(el.duration) && el.duration > 0) ? el.duration : (it.dur || 0);
+
+// ---------- 条目条 ----------
+const reel = $("reel");
+ITEMS.forEach((it, i) => {
+  const b = document.createElement("button"); b.type = "button"; b.className = "cell"; b.title = it.name;
+  b.innerHTML = '<span class="k">' + (ICON[it.kind] || "") + '</span><span><b></b><small></small></span><i></i>';
+  b.querySelector("b").textContent = it.name; b.querySelector("small").textContent = (it.kind === "video" ? "视频" : "音频") + " · " + (it.dur ? fmt(it.dur) : "–");
+  b.querySelector("i").id = "dot-" + i;
+  b.addEventListener("click", () => { go(i); if (mode !== "review") setMode("review"); });
+  reel.append(b);
+});
+
+// ---------- 总览 ----------
+ITEMS.forEach((it, i) => {
+  const c = document.createElement("button"); c.type = "button"; c.className = "card";
+  c.innerHTML = '<div class="cap"><b></b><span></span></div><div class="st" id="gst-' + i + '"></div><div class="note" id="gnote-' + i + '"></div>';
+  c.querySelector("b").textContent = it.name; c.querySelector("span").textContent = (it.kind === "video" ? "视频" : "音频") + " · " + (it.dur ? fmt(it.dur) : "–");
+  c.addEventListener("click", () => { go(i); setMode("review"); });
+  $("grid").append(c);
+});
+
+// ---------- 波形 / 进度 ----------
+function drawWave(cv, it, big){
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight; if (!w || !h) return;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const D = durOf(it), t = el ? el.currentTime : 0, px = D ? (t / D) * w : 0;
+  const base = big ? "#48484A" : css("--wave"), done = big ? "#F5F5F7" : css("--wave-done");
+  if (!big) { g.fillStyle = css("--well"); g.fillRect(0, 0, w, h); }
+  (it.chapters || []).forEach(([a, b], k) => { if (!D) return; g.fillStyle = big ? (k % 2 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.10)") : (k % 2 ? "rgba(128,128,128,.10)" : "rgba(128,128,128,.20)"); g.fillRect(a / D * w, 0, Math.max(1, (b - a) / D * w), h); });
+  const P = it.peaks || [];
+  if (P.length) {
+    const n = Math.max(1, Math.floor(w / 3)), mid = h / 2, amp = h * (big ? 0.46 : 0.42);
+    for (let x = 0; x < n; x++) {
+      const p0 = Math.floor(x / n * P.length), p1 = Math.max(p0 + 1, Math.floor((x + 1) / n * P.length));
+      let v = 0; for (let k = p0; k < p1 && k < P.length; k++) v = Math.max(v, P[k]);
+      const y = Math.max(1, v / 100 * amp), X = x * 3;
+      g.fillStyle = X < px ? done : base; g.fillRect(X, mid - y, 2, y * 2);
+    }
+  } else { g.fillStyle = base; g.fillRect(0, h / 2 - 1, w, 2); g.fillStyle = done; g.fillRect(0, h / 2 - 1, px, 2); }
+  (it.marks || []).forEach(([m]) => { if (!D) return; g.fillStyle = big ? "#FF9F0A" : css("--fix"); g.fillRect(m / D * w - 1, 0, 2, big ? 10 : 8); });
+  g.fillStyle = big ? "#2997FF" : css("--blue"); g.fillRect(px - 1, 0, 2, h);
+}
+function paintTime(){
+  const it = ITEMS[cur]; if (!it) return; const D = durOf(it), t = el ? el.currentTime : 0;
+  $("time").innerHTML = "<b>" + fmt(t) + "</b> / " + fmt(D);
+  if (it.kind === "audio") { $("a-time").innerHTML = fmt(t) + " <span>/ " + fmt(D) + "</span>"; drawWave($("a-wave"), it, true); }
+  else drawWave($("tl"), it, false);
+  const js = jumpsOf(it); let ci = -1; js.forEach((j, k) => { if (j[0] <= t + 0.05) ci = k; });
+  const chap = (it.chapters || []).find(([a, b]) => t >= a && t < b); if (it.kind === "audio") $("a-ch").textContent = chap ? chap[2] : "";
+  [...$("jumps").querySelectorAll(".jump")].forEach((b, k) => b.setAttribute("aria-current", String(k === ci)));
+}
+function loop(){ paintTime(); raf = el && !el.paused ? requestAnimationFrame(loop) : 0; }
+function seekFrom(cv, e){ const it = ITEMS[cur], D = durOf(it); if (!el || !D) return; const r = cv.getBoundingClientRect(); el.currentTime = Math.min(D - 0.05, Math.max(0, (e.clientX - r.left) / r.width * D)); paintTime(); }
+for (const id of ["tl", "a-wave"]) $(id).addEventListener("click", (e) => seekFrom($(id), e));
+addEventListener("resize", paintTime);
+
+// ---------- 播放器 ----------
+function playedFrac(){ if (!el || !isFinite(el.duration) || !el.duration) return 0; let s = 0; for (let k = 0; k < el.played.length; k++) s += el.played.end(k) - el.played.start(k); return Math.min(1, s / el.duration); }
+function notePlayed(){
+  const it = ITEMS[cur]; if (!it || !el) return; const f = Math.round(playedFrac() * 100) / 100;
+  if (f > (fb[it.id].played || 0) + 0.01) { fb[it.id].played = f; save(it.id); }
+  paintPlayed();
+}
+function paintPlayed(){ const it = ITEMS[cur]; const p = fb[it.id].played || 0; $("played").textContent = p ? "已播放 " + Math.round(p * 100) + "%" : ""; }
+function mount(){
+  const it = ITEMS[cur], scr = $("screen");
+  if (el) { el.pause(); el.removeAttribute("src"); el.load(); el.remove(); el = null; }
+  cancelAnimationFrame(raf); raf = 0;
+  el = document.createElement(it.kind === "video" ? "video" : "audio");
+  el.preload = "metadata"; el.src = it.src; el.setAttribute("playsinline", "");
+  if (it.kind === "video") { el.addEventListener("click", toggle); scr.prepend(el); } else { el.hidden = true; scr.append(el); }
+  $("aud").hidden = it.kind !== "audio"; $("transport").classList.toggle("audio-mode", it.kind === "audio");
+  $("a-name").textContent = it.name;
+  const sync = () => { const p = !el.paused; scr.classList.toggle("playing", p); $("pp").innerHTML = p ? PAUSE : PLAY; };
+  el.addEventListener("play", () => { sync(); loop(); }); el.addEventListener("pause", () => { sync(); notePlayed(); paintTime(); });
+  el.addEventListener("ended", () => { sync(); notePlayed(); }); el.addEventListener("loadedmetadata", () => { paintMeta(); paintTime(); });
+  el.addEventListener("seeked", paintTime);
+  el.addEventListener("error", () => { $("warn").hidden = false; $("warn").classList.add("err"); $("warn").textContent = "这条放不了：确认是从 serve_local.py 的 http://localhost 地址打开的，且文件格式浏览器支持（Chrome 不放 .mov 的 ProRes）"; });
+  sync();
+}
+function toggle(){ if (!el) return; if (el.paused) { const p = el.play(); if (p && p.catch) p.catch(() => {}); } else el.pause(); }
+function seekBy(d){ if (!el) return; el.currentTime = Math.max(0, Math.min(durOf(ITEMS[cur]) - 0.05, el.currentTime + d)); paintTime(); }
+function jump(dir){
+  const it = ITEMS[cur], js = jumpsOf(it); if (!el || !js.length) return; const t = el.currentTime;
+  const k = dir > 0 ? js.findIndex((j) => j[0] > t + 0.2) : (() => { let r = -1; js.forEach((j, i) => { if (j[0] < t - 0.6) r = i; }); return r; })();
+  if (k >= 0) { el.currentTime = js[k][0]; paintTime(); } else if (dir < 0) { el.currentTime = 0; paintTime(); }
+}
+$("pp").addEventListener("click", toggle); $("big-play").addEventListener("click", toggle);
+
+// ---------- 渲染 ----------
+function paintMeta(){
+  const it = ITEMS[cur], m = $("s-meta"); m.textContent = "";
+  const bits = [it.kind === "video" ? "视频" : "音频", "时长 " + fmt(durOf(it)), it.size ? (it.size / 1048576).toFixed(1) + " MB" : "", it.file && it.file !== it.name ? it.file : ""];
+  if (el && it.kind === "video" && el.videoWidth) bits.splice(2, 0, el.videoWidth + "×" + el.videoHeight);
+  for (const b of bits) if (b) { const s = document.createElement("span"); s.textContent = b; m.append(s); }
+}
+function render(){
+  const it = ITEMS[cur]; if (!it) return;
+  $("s-name").textContent = it.name; $("s-desc").hidden = !it.desc; $("s-desc").textContent = it.desc || "";
+  const box = $("jumps"), js = jumpsOf(it); box.textContent = ""; box.hidden = !js.length;
+  if (js.length) { const h = document.createElement("h4"); h.textContent = "段落和重点（点一下跳过去）"; box.append(h); }
+  for (const [t, n, sec, b] of js) {
+    const j = document.createElement("button"); j.type = "button"; j.className = "jump" + (sec ? " sec" : "");
+    const c = document.createElement("code"); c.textContent = fmt(t); const s = document.createElement("span"); s.textContent = sec ? n + "（到 " + fmt(b) + "）" : n;
+    j.append(c, s); j.addEventListener("click", () => { if (el) { el.currentTime = t; paintTime(); if (el.paused) toggle(); } }); box.append(j);
+  }
+  $("dl").href = it.src; $("dl").setAttribute("download", it.file || it.name);
+  if (!dirty) $("note").value = fb[it.id].note;
+  [...reel.children].forEach((c, i) => c.setAttribute("aria-current", String(i === cur)));
+  const cell = reel.children[cur]; if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: "nearest", inline: "nearest" });
+  paintMeta(); paintStatus(); paintSaved(); paintPlayed(); paintTime();
+}
+function paintStatus(){ const st = fb[ITEMS[cur].id].status; document.querySelectorAll(".status button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.st === st))); }
+function stamp(at){ return at ? "已保存 " + new Date(at).toLocaleTimeString("zh-CN", { hour:"2-digit", minute:"2-digit" }) : ""; }
+function paintSaved(){ $("saved").textContent = dirty ? "…" : stamp(fb[ITEMS[cur].id].at); }
+function paintProgress(){
+  let n = 0;
+  ITEMS.forEach((it, i) => { const st = fb[it.id].status; if (st === "ok" || st === "fix") n++;
+    const d = $("dot-" + i); d.className = st === "ok" ? "ok" : st === "fix" ? "fix" : ""; d.textContent = st === "ok" ? "✓" : st === "fix" ? "!" : "";
+    const g = $("gst-" + i); g.className = "st " + st; g.textContent = { ok: "通过", fix: "要改", wait: "待定" }[st] || "未审"; g.textContent += fb[it.id].played ? " · 已播放 " + Math.round(fb[it.id].played * 100) + "%" : "";
+    $("gnote-" + i).textContent = fb[it.id].note || ""; });
+  $("prog").innerHTML = "<b>" + n + "</b> / " + ITEMS.length + " 已审";
+}
+function go(i){
+  if (!ITEMS.length) return;
+  clearTimeout(tNote); if (dirty) save(ITEMS[cur].id); clearTimeout(autoTimer);
+  if (el) notePlayed();  // 换条之前先记下这条实际播放了多少
+  cur = (i + ITEMS.length) % ITEMS.length; dirty = false;
+  ls.set(KEY + "item", ITEMS[cur].id); try { history.replaceState(null, "", "#" + encodeURIComponent(ITEMS[cur].id)); } catch {}
+  mount(); render();
+}
+function setStatus(st, fromKey){
+  clearTimeout(autoTimer);
+  const id = ITEMS[cur].id; fb[id].status = fromKey ? st : fb[id].status === st ? "" : st; paintStatus(); paintProgress(); save(id);
+  if (fb[id].status === "ok") autoTimer = setTimeout(() => { if (ITEMS[cur].id === id && fb[id].status === "ok" && cur < ITEMS.length - 1) go(cur + 1); }, 300);
+  if (fb[id].status === "fix") $("note").focus();
+}
+function setMode(m){
+  mode = m; $("v-review").hidden = m !== "review"; $("v-grid").hidden = m !== "grid"; document.body.classList.toggle("grid-mode", m === "grid");
+  $("m-review").setAttribute("aria-pressed", String(m === "review")); $("m-grid").setAttribute("aria-pressed", String(m === "grid")); ls.set(KEY + "mode", m);
+  if (m === "grid" && el && !el.paused) el.pause();
+  if (m === "review") render();
+}
+const openSheet = (id) => { $(id).hidden = false; $(id).querySelector(".pill").focus(); };
+const closeSheet = (id) => { $(id).hidden = true; };
+$("next2").addEventListener("click", () => go(cur + 1));
+$("m-review").addEventListener("click", () => setMode("review"));
+$("m-grid").addEventListener("click", () => setMode("grid"));
+$("open-notes").addEventListener("click", () => openSheet("sheet"));
+$("close-notes").addEventListener("click", () => closeSheet("sheet"));
+$("open-help").addEventListener("click", () => openSheet("help"));
+$("close-help").addEventListener("click", () => closeSheet("help"));
+for (const id of ["sheet", "help"]) $(id).addEventListener("click", (e) => { if (e.target === $(id)) closeSheet(id); });
+document.querySelectorAll(".status button").forEach((b) => b.addEventListener("click", () => setStatus(b.dataset.st)));
+$("cite").addEventListener("click", () => {
+  const t = $("note"), tag = fmt(el ? el.currentTime : 0) + " ";
+  const pre = t.value && !t.value.endsWith("\n") ? "\n" : ""; t.value += pre + tag; t.focus(); t.setSelectionRange(t.value.length, t.value.length); t.dispatchEvent(new Event("input"));
+});
+
+// 自动保存：停 600ms 或失焦
+let tNote = 0, tAll = 0;
+$("note").addEventListener("input", () => { const id = ITEMS[cur].id; fb[id].note = $("note").value; dirty = true; paintSaved(); clearTimeout(tNote); tNote = setTimeout(() => save(id), 600); });
+$("note").addEventListener("blur", () => { clearTimeout(tNote); if (dirty) save(ITEMS[cur].id); });
+$("note").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save(ITEMS[cur].id); } if (e.key === "Escape") $("note").blur(); });
+$("note-all").addEventListener("input", () => { fb._all.note = $("note-all").value; dirtyAll = true; $("saved-all").textContent = "…"; clearTimeout(tAll); tAll = setTimeout(() => save("_all"), 600); });
+$("note-all").addEventListener("blur", () => { clearTimeout(tAll); if (dirtyAll) save("_all"); });
+
+document.addEventListener("keydown", (e) => {
+  for (const id of ["sheet", "help"]) if (!$(id).hidden) { if (e.key === "Escape") closeSheet(id); return; }
+  const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "?") { openSheet("help"); return; }
+  if (mode !== "review") return;
+  const k = e.key.toLowerCase();
+  if (e.key === " " || k === "k") { e.preventDefault(); toggle(); }
+  else if (k === "j") seekBy(-5); else if (k === "l") seekBy(5);
+  else if (e.key === "ArrowRight") { e.preventDefault(); go(cur + 1); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); go(cur - 1); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); jump(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); jump(-1); }
+  else if (e.key === "1") setStatus("ok", true); else if (e.key === "2") { e.preventDefault(); setStatus("fix", true); } else if (e.key === "3") setStatus("wait", true);
+});
+
+// ---------- 意见存储：/api/feedback/<条目 id>，整体意见 _all；played = 实际播放过的比例（浏览器 played 区间合计） ----------
+let online = false;
+async function save(id){
+  const f = fb[id]; const note = (f.note || "").trim();
+  if (!online && location.protocol === "file:") { $("warn").hidden = false; $("warn").textContent = "要从 serve_local.py 的 http://localhost 地址打开，意见才存得上"; return; }
+  try {
+    const at = new Date().toISOString(); const body = { shot: id, status: f.status || "", note, updatedAt: at };
+    if (id !== "_all") body.played = f.played || 0;
+    const r = await fetch("/api/feedback/" + encodeURIComponent(id), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error("save " + r.status);
+    f.at = at;
+    if (id === "_all") { dirtyAll = false; $("saved-all").textContent = stamp(at); } else if (ITEMS[cur].id === id && $("note").value.trim() === note) { dirty = false; paintSaved(); }
+    $("warn").hidden = true; $("warn").classList.remove("err"); paintProgress();
+  } catch (err) {
+    $("warn").hidden = false; $("warn").classList.add("err"); $("warn").textContent = "意见没存上：确认 serve_local.py 还在运行，再改一下就会重试";
+  }
+}
+(function(){
+  let last = "";
+  const tick = async () => {
+    try {
+      const r = await fetch("/api/feedback", { cache: "no-store" }); if (!r.ok) throw new Error("load " + r.status); online = true;
+      const j = await r.json(); const s = JSON.stringify(j); if (s === last) return; last = s;
+      for (const [id, v] of Object.entries(j)) { const f = fb[id]; if (!f || !v) continue;
+        const editing = (id === "_all" && dirtyAll) || (ITEMS[cur] && id === ITEMS[cur].id && dirty);
+        f.status = typeof v.status === "string" ? v.status : ""; if (!editing) f.note = typeof v.note === "string" ? v.note : ""; f.at = typeof v.updatedAt === "string" ? v.updatedAt : "";
+        if (id !== "_all" && typeof v.played === "number") f.played = Math.max(f.played || 0, v.played);
+        if (id === "_all" && !dirtyAll && document.activeElement !== $("note-all")) { $("note-all").value = f.note; $("saved-all").textContent = stamp(f.at); } }
+      if (ITEMS[cur] && !dirty && document.activeElement !== $("note")) $("note").value = fb[ITEMS[cur].id].note;
+      if (ITEMS.length) { paintStatus(); paintSaved(); paintPlayed(); } paintProgress();
+    } catch (e) { $("warn").hidden = false; $("warn").textContent = "连不上本地审核服务（serve_local.py 停了？），重启后刷新页面"; }
+  };
+  tick(); setInterval(tick, 2500);
+})();
+addEventListener("pagehide", () => { if (el) notePlayed(); });
+
+if (ITEMS.length) { mount(); setMode(ls.get(KEY + "mode") === "grid" ? "grid" : "review"); } else { $("s-name").textContent = "没有条目"; }
+paintProgress();
+if (ls.get(KEY + "notes-seen") !== VERSION) { ls.set(KEY + "notes-seen", VERSION); openSheet("sheet"); }
+</script>

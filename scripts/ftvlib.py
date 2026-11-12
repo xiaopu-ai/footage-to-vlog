@@ -13,7 +13,9 @@ inventory.py / grab.py / look.py / measure.py / make_clips.py 都 import 它,保
   FFMPEG / FFPROBE   指定可执行文件(默认在 PATH 里找;没有 ffprobe 也能工作)
   FTV_THREADS        给每个 ffmpeg 加 `-filter_threads N` 和输出 `-threads N`(降温,拿时间换温度;默认不加)
   FTV_HWACCEL        auto(默认:macOS 上 4K HEVC 先自测 2 秒软硬解 PSNR,inf 才用 videotoolbox)/ off / on
-  FTV_CACHE          缓存目录(默认 ~/.cache/footage-to-vlog,存硬解自测结果)
+  FTV_CACHE          缓存目录(存硬解自测结果)。不设时依次用:项目内(inventory 的 <out>/cache,其余脚本 <proj>/work/cache)
+                     → 用户级 ~/.cache/footage-to-vlog → 都写不进就只存内存(本次运行有效)。
+                     🔴 缓存写不进只提示、绝不让分析失败:实测沙箱拒写 ~/.cache 时,旧版让 43 条航拍全部分析失败、盘点却照样打印完成。
   FTV_LOCK / FTV_HELD_ENV / FTV_NO_QUEUE   排队相关,见 scripts/queue.sh 文件头
 """
 import hashlib
@@ -39,6 +41,10 @@ DEFAULT_LUTS = {
 }
 NO_LUT_PROFILES = {"rec709"}
 DEFAULT_LEVELS_TARGET = (0.05, 0.90)  # fix.levels="auto":本镜 p5 / p95 拉到这里(project.json 的 levels_target 可改)
+# 调色后(技术 LUT + fix + look 全链)亮度 p5 / p95 越过这两条线 = 暗部压死 / 高光削顶。
+# 开着 levels 时越线,基本就是「levels 先拉满、强对比色表的 S 曲线再压一次」(DeepSeek 实测 p5 0.000–0.011、p95 0.958–0.985)。
+CONFLICT_P5, CONFLICT_P95 = 0.02, 0.96
+SAFE_LEVELS_TARGET = (0.06, 0.86)  # 强对比色表配 levels auto 时,给 S 曲线留余量的目标
 
 
 # ───────────────────────── 基础 ─────────────────────────
@@ -127,10 +133,61 @@ def sha1_obj(obj):
     return hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+_CACHE = {"project": None, "resolved": False, "dir": None, "why": ""}
+
+
+def set_cache_dir(path, override=True):
+    """指定项目内缓存目录(inventory:<out>/cache;其余:<proj>/work/cache)。override=False 时已经设过就不改。"""
+    if _CACHE["project"] is not None and not override:
+        return
+    _CACHE.update(project=Path(path), resolved=False, dir=None, why="")
+
+
+def writable_dir(d):
+    """真的建目录、写一个临时文件再删掉。沙箱会拦写入但权限位照常,只看 os.access 不准。返回 (ok, 原因)。"""
+    try:
+        d = Path(d)
+        d.mkdir(parents=True, exist_ok=True)
+        t = d / (".ftv-write-test.%d" % os.getpid())
+        t.write_bytes(b"")
+        t.unlink()
+        return True, ""
+    except OSError as e:
+        return False, "%s: %s" % (type(e).__name__, e.strerror or e)
+
+
 def cache_dir():
-    d = Path(os.environ.get("FTV_CACHE") or (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "footage-to-vlog"))
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """可写的缓存目录,或 None(都写不进:调用方只存内存)。顺序:FTV_CACHE → 项目内 → 用户级。不抛异常。"""
+    if _CACHE["resolved"]:
+        return _CACHE["dir"]
+    cands = []
+    if os.environ.get("FTV_CACHE"):
+        cands.append(("FTV_CACHE", Path(os.path.expanduser(os.environ["FTV_CACHE"]))))
+    if _CACHE["project"] is not None:
+        cands.append(("项目内", _CACHE["project"]))
+    try:
+        home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "footage-to-vlog"
+        cands.append(("用户级", home))
+    except RuntimeError:  # 没有 HOME
+        pass
+    failed = []
+    for label, d in cands:
+        ok, why = writable_dir(d)
+        if ok:
+            if failed:
+                warn("缓存目录 %s 写不进,改用%s缓存 %s" % ("、".join(failed), label, d))
+            _CACHE.update(resolved=True, dir=d)
+            return d
+        failed.append("%s(%s:%s)" % (label, d, why))
+    warn("缓存目录都写不进:%s。硬解自测结果只存内存(本次有效),分析照常进行,不会漏素材"
+         % ("、".join(failed) or "没有候选"))
+    _CACHE.update(resolved=True, dir=None, why="; ".join(failed))
+    return None
+
+
+def cache_desc():
+    d = cache_dir()
+    return str(d) if d else "只存内存(%s)" % (_CACHE["why"] or "没有可写目录")
 
 
 # ───────────────────────── 排队 ─────────────────────────
@@ -468,19 +525,29 @@ def _ff_version():
     return (r.stdout.decode("utf-8", "replace").splitlines() or [""])[0]
 
 
+_HW_MEM = {}
+
+
 def use_hwaccel(path, entry, lut_path=None):
-    """macOS 4K HEVC:同一种格式第一次遇到时测 2 秒软解 / 硬解的 PSNR(过同一条技术还原链),inf 才用硬解;结果缓存。"""
+    """macOS 4K HEVC:同一种格式第一次遇到时测 2 秒软解 / 硬解的 PSNR(过同一条技术还原链),inf 才用硬解;
+    结果存进缓存目录的 hwaccel.json(写不进就只存内存)。缓存读写出任何错都不影响分析。"""
     if not hw_candidate(entry):
         return False
     if os.environ.get("FTV_HWACCEL", "auto").lower() == "on":
         return True
-    cf = cache_dir() / "hwaccel.json"
-    try:
-        cache = json.loads(cf.read_text("utf-8"))
-    except (OSError, ValueError):
-        cache = {}
     key = hw_signature(entry) + "|" + _ff_version()
-    if key in cache:
+    if key in _HW_MEM:
+        return _HW_MEM[key]["ok"]
+    cd = cache_dir()
+    cf = cd / "hwaccel.json" if cd else None
+    cache = {}
+    if cf is not None:
+        try:
+            cache = json.loads(cf.read_text("utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+    if key in cache and isinstance(cache[key], dict) and "ok" in cache[key]:
+        _HW_MEM[key] = cache[key]
         return cache[key]["ok"]
     t = max(0.0, min(10.0, (entry.get("duration") or 4) / 2 - 1))
     ch = tech_chain(entry, 1920, 1080, lut_path) + ",format=rgb24"
@@ -496,10 +563,14 @@ def use_hwaccel(path, entry, lut_path=None):
     ok = r.returncode == 0 and psnr == "inf"
     cache[key] = {"ok": ok, "psnr": psnr, "tested": datetime.now().isoformat(timespec="seconds"), "file": str(path),
                   "seconds": round(time.time() - t0, 1)}
-    try:
-        cf.write_text(json.dumps(cache, ensure_ascii=False, indent=1), "utf-8")
-    except OSError:
-        pass
+    _HW_MEM[key] = cache[key]
+    if cf is not None:
+        try:
+            tmp = cf.with_suffix(".json.%d.tmp" % os.getpid())
+            tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=1), "utf-8")
+            os.replace(tmp, cf)
+        except OSError as e:
+            warn("硬解自测结果写不进缓存 %s(%s),只存内存" % (cf, e))
     print("  [硬解自测] %s → PSNR %s → %s(%.1f s)" % (Path(path).name, psnr, "用 videotoolbox" if ok else "用软解",
                                                      time.time() - t0), flush=True)
     return ok
@@ -599,12 +670,18 @@ def analyze(path, rel=None, frames=None):
     ts = [d * 0.5] if frames == 1 else [d * k for k in (0.25, 0.5, 0.75)][:frames]
     hw = hw_candidate(info) and use_hwaccel(path, dict(info, range=range_of(info), matrix=matrix_of(info, nrt), profile="rec709"))
     arrs = []
+    errs = []
     for t in ts:
         try:
             arrs.append(luma_codes(path, max(0.0, min(t, d - 0.1)), hw))
         except RuntimeError as e:
+            errs.append(str(e))
             warn(str(e))
     stats = code_stats(arrs) if arrs else None
+    trc = (info.get("transfer") or "").lower()
+    if stats is None and not nrt.get("gamma") and trc not in ("arib-std-b67", "smpte2084"):
+        # 判曲线要靠码值:一帧都没抽到就不能瞎猜成 rec709(Log 素材会被当成正常片子),按失败处理,让盘点对账抓到
+        raise RuntimeError("抽帧量码值全部失败(%d 帧),无法判断曲线:%s" % (len(ts), (errs[-1] if errs else "无输出")[-300:]))
     profile, reason, conf = classify(info, nrt, stats)
     st = os.stat(path)
     e = {
@@ -686,6 +763,8 @@ def source_entry(proj, project, src, root=None, footage=None, profile=None, forc
     path = resolve_src(project, src, root)
     if not path.exists():
         raise RuntimeError("素材不存在:%s" % path)
+    if proj:
+        set_cache_dir(Path(proj) / "work" / "cache", override=False)  # 缓存默认放项目内
     footage = footage if footage is not None else (load_footage(proj) if proj else {})
     e = footage.get(src)
     if e is None:
@@ -856,6 +935,45 @@ def frame_stats(rgb):
     rb = float(((rgb[..., 0] - rgb[..., 2])[m]).mean() * 255) if m.any() else float("nan")
     return {"p5": round(float(p5), 4), "p50": round(float(p50), 4), "p95": round(float(p95), 4),
             "rb_mid": round(rb, 2), "mid_frac": round(float(m.mean()), 3)}
+
+
+def levels_on(fix):
+    lv = (fix or {}).get("levels")
+    return lv == "auto" or isinstance(lv, dict)
+
+
+def grade_check(p5, p95, fix=None, look=None):
+    """调色后的 p5 / p95 越线检查。没越线返回 None;越线返回 {kind, msg, advice}:
+    kind = "levels-conflict"(开着 levels:色表和 levels 叠压)/ "crush"(没开 levels:色表或曝光本身压死 / 削顶)。"""
+    lo, hi = p5 < CONFLICT_P5, p95 > CONFLICT_P95
+    if not (lo or hi):
+        return None
+    what = "、".join(x for x in ("暗部压死 p5 %.3f < %.2f" % (p5, CONFLICT_P5) if lo else "",
+                                 "高光削顶 p95 %.3f > %.2f" % (p95, CONFLICT_P95) if hi else "") if x)
+    if levels_on(fix):
+        return {"kind": "levels-conflict", "msg": "色表和 levels 冲突:%s" % what,
+                "advice": "去掉 fix.levels,改用 fix.exposure / fix.warm 逐镜对齐;或把 project.json 的 levels_target 收到 [%.2f, %.2f]"
+                          % SAFE_LEVELS_TARGET}
+    return {"kind": "crush", "msg": what,
+            "advice": "色表%s太陡:降 fix.exposure,或换对比更缓的色表" % ("" if look else "(没套色表,是曝光 / 技术还原)")}
+
+
+def file_frame_stats(path, times, W=480, H=270):
+    """量已编码片段(make_clips 的输出:tv range BT.709 yuv420p)在若干秒处的亮度 / 冷暖。返回 [frame_stats…]。"""
+    import numpy as np
+    out = []
+    for t in times:
+        cmd = ff_head() + ["-v", "error", "-ss", "%.4f" % max(0.0, t), "-i", str(path), "-frames:v", "1", "-an",
+                           "-vf", "scale=%d:%d:in_range=tv:out_range=pc:in_color_matrix=bt709:flags=bicubic+accurate_rnd+full_chroma_int,"
+                                  "format=rgb48le" % (W, H),
+                           "-f", "rawvideo", "-pix_fmt", "rgb48le"] + ff_out_threads() + ["-"]
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        n = W * H * 6
+        if r.returncode != 0 or len(r.stdout) < n:
+            raise RuntimeError("抽帧失败 %s @%.2fs:%s" % (path, t, r.stderr.decode("utf-8", "replace")[-200:]))
+        a = np.frombuffer(r.stdout[:n], np.uint16).reshape(H, W, 3).astype(np.float64) / 65535.0
+        out.append(frame_stats(a))
+    return out
 
 
 # ───────────────────────── 字体(联系表 / 拼图标注)─────────────────────────

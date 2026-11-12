@@ -1,5 +1,27 @@
 # 配乐、节拍、音效、混音
 
+## 0. 先确认配乐从哪来（能力探测）
+
+不要一上来就要用户的 ElevenLabs key。按顺序找，找到第一条能用的就停：
+
+1. **用户给了音频文件**：直接用，不需要任何生成能力。
+2. **当前 agent 宿主已经连着能生成音乐的工具**：比如某个 MCP / 插件里的配乐生成。先看自己的工具清单，有就用。
+3. **`ELEVENLABS_API_KEY` 已经在环境里**：用本 skill 的 `music_gen.py`。
+4. **都没有**：一次说清楚缺什么，给两个选项：「给我一个音乐文件」或「接一个生成接口（比如 ElevenLabs）」。
+
+```bash
+python3 scripts/capabilities.py <proj> [--music-file 路径…] [--host-tool "工具名:能做什么"…]
+```
+
+- 结果写进 `work/capabilities.json`，下一轮比较不同 agent 时也要附上它。
+- 脚本看不到宿主的工具，第 2 条要你自己查完后用 `--host-tool` 传进去。
+- 只检查 key 有没有，**绝不打印 key 的值**，也不要为了找 key 去翻无关目录。
+- 配置存在但当前环境读不到（比如 `.env` 在、但没加载），和确实没有配置，是两种情况，要分开告诉用户。
+
+**有费用的生成先报价**：说清楚供应商、模型、生成几首、预计费用，用户同意后再生成，并把回执记进 `work/music/`。同一会话里同意过同类费用的，沿用。
+
+下面第 1 节以 ElevenLabs 的作曲计划为例。别的生成工具照这个思路写提示词就行：BPM、段落、哪里重击、不要什么。后面的测拍、重剪和供应商无关。
+
 ## 1. 作曲计划 → 生成
 
 - 从 `assets/music-plans/<style>.plan.json` 改起。格式是 ElevenLabs Music 的 `composition_plan`：全局正负风格词 + 若干段，每段有正负风格词和 `duration_ms`。
@@ -26,7 +48,23 @@ python3 scripts/tempo.py work/music/a.mp3 --out beats.json        # 可加 --fro
 
 - 🔴 别信单一的测拍结果：常见工具把 124 测成 83 / 99 / 164，把 128 测成 96。`tempo.py` 先用多频段起音自相关粗测，再在军鼓 / 拍手频段（1.5–4 kHz）和底鼓频段上做最小二乘细拟合，残差约 40 ms。
 - 生成的曲子常常不按计划走：段落时长不守、中途变速、最后直接淡出。拿到后先测、先看结构，再决定怎么剪。
-- `beats.json` 是 `timeline.py` 解析 `{"beat"}` / `{"bar"}` / `{"eighth"}` 的依据。剪辑后的配乐要**重新测一次**。
+- `beats.json` 是 `timeline.py` 解析 `{"beat"}` / `{"bar"}` / `{"eighth"}` / `{"accent"}` 的依据。剪辑后的配乐要**重新测一次**。
+
+### 重音表：切点要落在重音上，不是落在网格上
+
+- `tempo.py` 会在 `beats.json` 里写一张重音表 `accents`：底鼓、军鼓 / 拍手、宽频大冲击，每个带强度百分位 `s`（0–1）。
+- 同时写 `onset_density`：每秒起音数。
+- 这张表要用起来：**切点落在网格上，不等于落在重音上。** 有一条片子的配乐每秒约 18 次起音，35 个切点全在 8 分音符网格上，用户看着还是「没卡上点、素材在不停切换」，因为大部分刀落在 hi-hat 上，而不是底鼓、军鼓和乐句头上。
+- 写法：
+  - 关键的刀直接写 `"at": {"accent": n}`（第 n 个重音）；
+  - 或者照常按拍写，再加 `"snap": "accent"`，让编译器吸附到 ±4 帧内最近的强重音。
+- 判据：
+  - `bands.py` 看每小节的 onsets/s 和最强重音的位置。
+  - 全曲平均 **> 15 次 / 秒**时，鼓组太密，不要按 8 分音符机械地切。改按 4 分音符和强重音切，8 分音符留给一个动作内部的水花峰值。
+  - 切点密度跟着**显著重音**的密度走，不跟网格走。
+- 燃剪 drop 段的硬切至少 60% 要落在强重音（`s ≥ 0.7`）±2 帧内（没写 drop 段时按全片硬切算），`timeline.py` 和 `qa.py` 都会查。
+- 强度 `s` 是全曲相对百分位。律动很稳的曲子里，同样响的底鼓之间排序没有意义，看 `kind` 和是不是在小节头，不要只比 `s`。
+- 剪辑后的配乐用 `tempo.py --accents-only` 沿用已有网格，只重测重音。
 
 ## 3. 按小节重剪
 
@@ -72,12 +110,11 @@ python3 scripts/sfx_prep.py work/sfx/raw/*.mp3 --out public/audio/sfx/
 | 人声 / 原声 | 1.0。原声段比前后低 3–4 dB 时乘 1.8 拉平 |
 | 音效 | 0.22–0.85，重击最响 |
 
-**交付响度**：−14 LUFS、真峰值 −1.5 dBTP。直接 loudnorm 常常真峰值超标，要先限幅：
+**交付响度**：−14 LUFS、真峰值 −1.5 dBTP。`render.py` 会自动做：先用 `mix.py` 混出规范混音，再 `alimiter=limit=0.74` 限幅，再两遍 loudnorm，最后用 ffmpeg 封进成片。不限幅直接 loudnorm，真峰值常常超标（实测 −1.4 dBTP）。
 
-```bash
-ffmpeg -i out/raw.mp4 -c:v copy -af "alimiter=limit=0.74" out/lim.mp4
-python3 scripts/loudnorm.py out/lim.mp4 out/final.mp4 --I -14 --TP -1.5
-```
+**规范混音**：`mix.py` 按 timeline 的音量曲线（配乐 gain_keys、人声闪避、音效、原声）用 numpy 混出整片 WAV，和模板 `FilmAudio.tsx` 是同一套算法，只是不带 Remotion 自己的取整（音量 1/97 一档、约 85 ms 才更新一次）。
+
+成片音轨以它为准，`qa.py` 也拿它做音画对齐的基准。不要用 Remotion 直出的 AAC 音轨：实测比画面晚约 40 ms。
 
 ## 6. 卡点表（交付物）
 

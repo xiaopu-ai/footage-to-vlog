@@ -45,6 +45,10 @@ svg{display:block}
 .prog b{color:var(--ink);font-weight:600}
 .tlink{border:0;background:transparent;color:var(--blue);font-size:13px;cursor:pointer;padding:4px 0;white-space:nowrap}
 .help{width:24px;height:24px;border-radius:50%;border:0;background:var(--well);font-size:13px;font-weight:600;color:var(--sub);cursor:pointer}
+/* 素材覆盖（work/coverage.json 有才显示）：顶栏一颗小标签，点开看全句、复用最多和没用到的素材 */
+.cov{border:0;background:var(--well);color:var(--ink);font-size:12px;font-weight:500;height:24px;padding:0 10px;border-radius:999px;cursor:pointer;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cov.warnc{color:var(--fix)}
+.covlist{margin:0;padding-left:20px;font-size:13px;color:var(--sub);display:grid;gap:3px;max-height:40dvh;overflow:auto}
 
 /* 逐镜 */
 main{flex:1;container-type:inline-size}
@@ -194,7 +198,7 @@ body.grid-mode .strip{display:none}
 <header class="bar">
   <div class="brand"><b>__TITLE__</b><span>__BRAND__</span></div>
   <div class="segctl" role="group" aria-label="视图"><button type="button" id="m-review" aria-pressed="true">逐镜</button><button type="button" id="m-grid" aria-pressed="false">总览</button></div>
-  <div class="right"><span class="prog" id="prog" aria-live="polite"><b>0</b> / __N__ 已审</span><button class="tlink" type="button" id="open-notes">本版改动</button><button class="help" type="button" id="open-help" aria-label="快捷键">?</button></div>
+  <div class="right"><button class="cov" type="button" id="cov" hidden></button><span class="prog" id="prog" aria-live="polite"><b>0</b> / __N__ 已审</span><button class="tlink" type="button" id="open-notes">本版改动</button><button class="help" type="button" id="open-help" aria-label="快捷键">?</button></div>
 </header>
 
 <main id="v-review">
@@ -247,6 +251,15 @@ body.grid-mode .strip{display:none}
 __NOTES__
     </ol>
     <div class="row"><button class="pill" type="button" id="close-notes">开始审片</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="cov-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="cov-h">
+  <div class="pane">
+    <h3 id="cov-h">素材用了多少</h3>
+    <p class="sub" id="cov-sum"></p>
+    <div id="cov-body"></div>
+    <div class="row"><button class="pill" type="button" id="close-cov">好</button></div>
   </div>
 </div>
 
@@ -423,7 +436,22 @@ $("open-notes").addEventListener("click", () => openSheet("sheet"));
 $("close-notes").addEventListener("click", () => closeSheet("sheet"));
 $("open-help").addEventListener("click", () => openSheet("help"));
 $("close-help").addEventListener("click", () => closeSheet("help"));
-for (const id of ["sheet", "help"]) $(id).addEventListener("click", (e) => { if (e.target === $(id)) closeSheet(id); });
+for (const id of ["sheet", "help", "cov-sheet"]) $(id).addEventListener("click", (e) => { if (e.target === $(id)) closeSheet(id); });
+// 素材覆盖：build_review.py 读 work/coverage.json 后写进 PAGE.coverage = {used, total, unused_n, summary, top_reused:[[名,次]], unused:{目录:[名]}}
+(function(){
+  const C = PAGE.coverage; if (!C || !C.total) return;
+  const b = $("cov"); b.hidden = false; b.textContent = "素材 " + C.used + " / " + C.total; b.title = C.summary || "";
+  if (C.unused_n > 0) b.classList.add("warnc");
+  $("cov-sum").textContent = C.summary || "";
+  const body = $("cov-body");
+  const sec = (title, rows) => { if (!rows.length) return; const h = document.createElement("h4"); h.textContent = title; h.style.margin = "8px 0 4px"; h.style.fontSize = "13px";
+    const ul = document.createElement("ul"); ul.className = "covlist"; for (const r of rows) { const li = document.createElement("li"); li.textContent = r; ul.append(li); } body.append(h, ul); };
+  sec("复用次数最多", (C.top_reused || []).filter((x) => x[1] > 1).map(([n, k]) => n + " × " + k));
+  const un = C.unused || {}; const rows = []; for (const [d, ns] of Object.entries(un)) rows.push((d ? d + "/：" : "") + ns.length + " 条 — " + ns.slice(0, 12).join("、") + (ns.length > 12 ? " …" : ""));
+  sec("还没用到（按目录）", rows);
+  b.addEventListener("click", () => openSheet("cov-sheet"));
+  $("close-cov").addEventListener("click", () => closeSheet("cov-sheet"));
+})();
 document.querySelectorAll(".status button").forEach((b) => b.addEventListener("click", () => setStatus(b.dataset.st)));
 $("more").open = ls.get(KEY + "more") === "1";
 $("more").addEventListener("toggle", () => ls.set(KEY + "more", $("more").open ? "1" : "0"));
@@ -443,7 +471,7 @@ $("note-all").addEventListener("input", () => { fb._all.note = $("note-all").val
 $("note-all").addEventListener("blur", () => { clearTimeout(tAll); if (dirtyAll) save("_all"); });
 
 document.addEventListener("keydown", (e) => {
-  for (const id of ["sheet", "help"]) if (!$(id).hidden) { if (e.key === "Escape") closeSheet(id); return; }
+  for (const id of ["sheet", "help", "cov-sheet"]) if (!$(id).hidden) { if (e.key === "Escape") closeSheet(id); return; }
   const typing = /^(TEXTAREA|INPUT)$/.test(document.activeElement && document.activeElement.tagName);
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "?") { openSheet("help"); return; }

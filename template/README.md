@@ -52,18 +52,30 @@ node tools/stills.mjs [另一份timeline.json] <输出目录> <帧…> [--scale=
 
 一次打包（关 webpack 缓存）、只开一个浏览器，按整片帧号连续出 `f0120.png`。默认用 `renderStill` 直接渲 Film 的那一帧；`--comp=Frame` 走 1 帧合成。分镜审核台（`<skill>/review/build_review.py`）就是调它出图。
 
-## 整片渲染
+## 整片渲染：用 `scripts/render.py`，不要直接交付 Remotion 的输出
 
 ```bash
-<skill>/scripts/queue.sh npx remotion render src/index.ts Film out/film.mp4 \
-  --gl=angle --concurrency=4 --timeout=1800000 --bundle-cache=false
+python3 <skill>/scripts/render.py <proj> --preview 15 --allow-draft   # 节奏预演：开场 15 秒、半分辨率
+python3 <skill>/scripts/render.py <proj> --name <片名>-v1             # 整片：再出无声版 / 纯人声版
+python3 <skill>/scripts/qa.py <proj> out/<片名>-v1.mp4 --kind film    # 输出检查，任一项 fail 退出码非零
 ```
 
-- 🔴 **渲染要排队**：本机同一时间只跑一个重任务（整片渲染、静帧批量、转码、切片段）。两个 ffmpeg 同时跑，笔记本 CPU 到过 100°C；两个渲染同时跑会双双超时。整片用 `scripts/queue.sh` 包着跑；静帧可以设 `RENDER_QUEUE=<skill>/scripts/queue.sh`，`tools/stills.mjs` 会自己进队列。
-- `--gl=angle`：SVG 滤镜、遮罩和大量叠层走 GPU（`remotion.config.ts` 也设了）。
+`render.py` 的步骤：
+1. 排队调 Remotion **静音**渲画面，参数是 `--muted --image-format=png --pixel-format=yuv420p --color-space=bt709 --gl=angle --concurrency=4 --timeout=1800000 --bundle-cache=false`；
+2. 核对帧数；
+3. 用 `mix.py` 出规范混音，先限幅、再两遍响度标准化；
+4. 用 ffmpeg 封装：视频流不重编码，补齐 BT.709 色彩标签。
+
+为什么不用 Remotion 直出（实测）：
+- 带声音的直出，AAC 音轨晚约 43 ms；
+- 用 JPEG 帧渲染出来是全范围 BT.601。
+
+`remotion.config.ts` 已经改成 PNG 帧、yuv420p、BT.709。代价是渲染慢一些：10 秒片段约 36 秒，原来约 21 秒。
+
+其他要点：
+- 🔴 **渲染要排队**：本机同一时间只跑一个重任务。`render.py` 会自己走 `scripts/queue.sh`；静帧可以设 `RENDER_QUEUE=<skill>/scripts/queue.sh`，`tools/stills.mjs` 会自己进队列。
 - `--timeout=1800000`：字体的 `delayRender` 句柄一旦没清除，渲到 `--timeout` 就整片退出。模板里字体加载成功、失败、20 秒超时都会放行，这个值只是保险。
 - `--bundle-cache=false`：几个项目共用 node_modules 时 webpack 缓存会串。
-- 渲完：`scripts/sheet.py --video out/film.mp4 --fps 2` 看联系表；响度、卡点、二维码见 skill 的 `references/qa.md`（模板不做限幅和响度标准化，那一步在 `scripts/loudnorm.py`）。
 
 ## 模板实现了什么
 

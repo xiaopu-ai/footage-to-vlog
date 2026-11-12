@@ -16,8 +16,25 @@
 退出码:lint 有错误 → 1(timeline.json 照样写出来,方便排查,但不能拿去渲染);只有警告 → 0。
 
 要点(细节见 references/edit-schema.md;本文件补充的约定写在各函数说明里):
-  - 时间点 T:帧 / {"s"} / {"beat"} / {"bar","beat"} / {"eighth"} / {"say","nth","edge"} / {"shot","edge"},都可加 "offset"。
+  - 时间点 T:帧 / {"s"} / {"beat"} / {"bar","beat"} / {"eighth"} / {"accent"} / {"say","nth","edge"} / {"shot","edge"},都可加 "offset"。
     拍网格换算:帧 = round(拍点秒 × fps) − lead_frames(只对画面:镜头、文字;音效和音量关键点不减 lead)。
+    {"accent": n} = beats.json 重音表 accents 的第 n 项(从 0 数;tempo.py 打印的 # 号),按 audio.music.at / trim_s 平移到成片;
+    画面同样减 lead。重音常常偏离网格一两帧:主轨上一镜按拍写了 dur 时会和它差出空隙,所以上一镜不写 dur(取到这一镜),
+    或者这一镜照常按拍写、改用 snap。
+  - 镜头 "allow_reuse": true:显式允许这一镜和同一素材的其他镜头源区间重叠 / 多次使用(lint 列出来,不报错),note 里写理由。
+  - 镜头 "snap": "accent":先按 at / dur 排好,再把本镜切点吸附到 ±4 帧内最近的强重音(s ≥ 0.7;同距离取更强的)。
+    只挪切点:同层上一镜的结尾离旧切点 ≤ 4 帧时跟到新切点(不留空隙、不重叠);本镜结尾不动。找不到就警告、不挪。
+  - 变速关键点 speed: [[位置, 速度], …] 的「位置」可以写 0–1 的数字(镜头内进度,照旧),也可以写时间点 T
+    (比如 {"beat": 34}),编译时换算成镜头内进度;落在镜头外报错。timeline.json 里一律是数字进度。
+  - sections:[{"name", "kind", "at", "dur"?}]。kind 取 intro / build / stop / drop / breakdown / end / other;
+    没写 kind 时 name 里含 drop(不分大小写)的算 drop,其余 other。没写 dur 就到下一段开头。
+  - Logo:endcard 的 logos 每项、image 的 src 都可以写字符串或 {"src", "w"?, "h"?, "invert"?}。编译后 endcard.logos 一律是对象数组;
+    image 的 src 还是字符串(模板按字符串读),对象里的 w / h / invert 提到文字本身上(文字自己写了的优先)。
+    缺 src、空字符串、类型不对 → 错误;public/ 下找不到文件 → 警告。
+  - timeline.json 另有:accents(成片帧)、sections(带 kind)、cuts(主轨每个切点)、expected_dark(设计好的暗场区间)、
+    stats(重音命中、变速、碎镜、复用的统计;审核台 / qa 读它)。字段见 write_extras() 的说明。
+  - 新 lint(错误 → 退出码 1;阈值在下面的常量里,用 brp 燃剪定版片校过,见 rhythm_lints() 的说明):
+    同源复用、重音命中、变速坡、碎镜、起音密度。
   - 时长 D:帧 / {"s"} / {"beats"} / {"bars"} / {"eighths"} / {"until": T}。按拍写的时长,结尾落在拍网格上
     (起点不在网格上时,离最近的 8 分音符 ≤ 2 帧就吸附过去),连续几镜按拍顺接不会累积取整误差。
   - 镜头 at 缺省 = 同层上一镜结尾;dur 缺省 = 同层下一镜写了 at 时取到它为止,主轨最后一镜取到全片结尾。
@@ -63,6 +80,27 @@ QCARD_MIN = 110
 STD_FPS = (24000 / 1001, 30000 / 1001, 60000 / 1001, 120000 / 1001, 240000 / 1001)
 EPS = 1e-6
 
+# ── 节奏 / 复用 lint 的阈值 ──
+SECTION_KINDS = ("intro", "build", "stop", "drop", "breakdown", "end", "other")
+HARD_CUTS = {"cut", "punch", "whip"}
+STRONG_S = 0.7          # 强重音:accents 里 s ≥ 这个值
+SNAP_WIN = 4            # "snap": "accent" 的搜索半径(帧)
+HIT_WIN = 2             # 切点离强重音 ≤ 这么多帧算命中
+HIT_MIN_N = 4           # 参与统计的硬切少于这个数时只提示,不判错
+HIT_ERR = {"hype": 0.60}               # 低于 → 错误
+HIT_WARN = {"hype": 0.75, "launch": 0.60}  # 低于 → 警告
+RAMP_MAX_SPEED = 0.9    # 变速坡:speed 是关键点数组、有变化、最小值 < 这个值
+CONST_RUN_MAX = 4       # drop 段连续恒速镜头超过这个数 → 警告
+SHORT_SHOT_S = 1.5      # 碎镜:短于这么多秒
+SHORT_COUNT_SHARE = 0.40  # 碎镜:drop 段短镜头的个数占比 > 这个值
+SHORT_TIME_SHARE = 0.30   # 且时长占比 > 这个值(只看个数会误伤定版片:brp 燃剪 drop 段 12 镜里 5 镜 1.0–1.47 s,个数 42%、时长 27%)
+DENSE_ONSETS = 15.0     # 配乐起音密度(beats.json onset_density.mean)> 这个值
+DENSE_AVG_S = 1.6       # 且 drop 段平均镜长 < 这么多秒 → 警告
+REUSE_OVERLAP_S = 0.2   # 同一素材的源区间重叠超过这么多秒 → 错误
+REUSE_COUNT_WARN = 3    # 同一素材用这么多次以上 → 警告(首尾相接的同源接续算一次)
+DISTINCT_MIN = 0.70     # hype / launch / manifesto 主轨 不同素材数 / 有素材的镜头数 < 这个值 → 警告
+DISTINCT_STYLES = {"hype", "launch", "manifesto"}
+
 
 def norm_fps(f):
     for s in STD_FPS:
@@ -83,10 +121,12 @@ class Lint:
         self.errors, self.warnings, self.info = [], [], []
 
     def err(self, msg):
-        self.errors.append(msg)
+        if msg not in self.errors:  # 同一个时间点会被解析两次(本镜的 at、上一镜缺 dur 时取到它),同样的错只记一次
+            self.errors.append(msg)
 
     def warn(self, msg):
-        self.warnings.append(msg)
+        if msg not in self.warnings:
+            self.warnings.append(msg)
 
 
 # ───────────────────────── 拍网格 ─────────────────────────
@@ -143,6 +183,22 @@ class Ctx:
         self.grid = None
         self.words = []
         self.shots = {}  # 已编译的镜头 id → dict
+        self.accents = None  # [{"i", "t"(成片秒), "f"(成片帧,未减 lead), "s", "kind"}];None = beats.json 里没有重音表
+
+    def lead(self):
+        return self.grid.lead if self.grid else 0
+
+    def strong_near(self, f, win):
+        """画面帧 f 附近 ±win 帧内最近的强重音(画面目标帧 = 重音帧 − lead)。返回 (重音, 目标帧) 或 (None, None)。"""
+        best, bf = None, None
+        for a in self.accents or []:
+            if a["s"] < STRONG_S:
+                continue
+            tf = a["f"] - self.lead()
+            d = abs(tf - f)
+            if d <= win and (best is None or d < abs(bf - f) or (d == abs(bf - f) and a["s"] > best["s"])):
+                best, bf = a, tf
+        return best, bf
 
     def say(self, spec, where):
         phrase = str(spec.get("say", ""))
@@ -195,6 +251,21 @@ class Ctx:
                 self.lint.err(f"[时间] {where}:引用的镜头 {spec['shot']} 不存在或还没排(只能引用主轨、或排在前面的镜头)")
             else:
                 f = sh["end"] if spec.get("edge") == "end" else sh["cut"]
+        elif "accent" in spec:
+            if not self.accents:
+                self.lint.err(f"[重音] {where}:用了 {{\"accent\": …}},但 beats.json 里没有重音表 accents(用新版 tempo.py 重测)")
+                return None, None
+            n = spec["accent"]
+            if isinstance(n, bool) or not isinstance(n, (int, float)) or int(n) != n or not 0 <= int(n) < len(self.accents):
+                self.lint.err(f"[重音] {where}:accent {n!r} 不存在(重音表共 {len(self.accents)} 项,从 0 数)")
+                return None, None
+            a = self.accents[int(n)]
+            if not a["in_film"]:
+                self.lint.err(f"[重音] {where}:重音 #{int(n)}(音乐 {a['t_music']:.3f} s)按 audio.music 的 at / trim_s 平移后不在成片里")
+                return None, None
+            f = a["f"] - (self.lead() if lead else 0)
+            if f < 0 <= a["f"]:
+                f = 0
         elif "bar" in spec or "beat" in spec or "eighth" in spec:
             if not self.grid:
                 self.lint.err(f"[时间] {where}:按拍写时间需要 beats.json(先跑 tempo.py)")
@@ -354,6 +425,93 @@ def norm_tr(tr, where, lint):
     return out
 
 
+def snap_cut(ctx, lint, s, where, L, k, cut, cut_bp, end, prev_rec):
+    """"snap": "accent":切点吸附到 ±SNAP_WIN 帧内最近的强重音。只挪切点;同层上一镜的结尾离旧切点不超过 SNAP_WIN 帧时
+    (正好接上,或手写偏了几帧),它的结尾跟到新切点,不留空隙。
+    返回 (新切点, 新拍位, 吸附记录或 None)。"""
+    mode = s.get("snap")
+    if mode != "accent":
+        lint.warn(f"[重音] {where}:snap 只支持 \"accent\",现在是 {mode!r},忽略")
+        return cut, cut_bp, None
+    if ctx.accents is None:
+        lint.warn(f"[重音] {where}:写了 snap: accent,但 beats.json 里没有重音表(先跑新版 tempo.py),没吸附")
+        return cut, cut_bp, None
+    if L == 0 and k == 0 and cut == 0:
+        return cut, cut_bp, None  # 全片第一帧不挪
+    a, tf = ctx.strong_near(cut, SNAP_WIN)
+    if a is None:
+        lint.warn(f"[重音] {where}:snap: accent,但切点 {cut} ±{SNAP_WIN} 帧内没有强重音(s ≥ {STRONG_S}),没吸附;"
+                  f"换个位置,或改写 {{\"accent\": n}} 直接指定")
+        return cut, cut_bp, None
+    if tf == cut:
+        return cut, cut_bp, {"from": cut, "to": cut, "accent": a["i"]}
+    if tf >= end:
+        lint.warn(f"[重音] {where}:吸附到重音 #{a['i']}(帧 {tf})会越过本镜结尾 {end},没吸附")
+        return cut, cut_bp, None
+    if prev_rec is not None and abs(prev_rec["end"] - cut) <= SNAP_WIN:  # 上一镜接在(或差几帧接在)这里:结尾跟到新切点
+        if tf <= prev_rec["cut"]:
+            lint.warn(f"[重音] {where}:吸附到帧 {tf} 会把上一镜 {prev_rec['s']['id']} 吃没,没吸附")
+            return cut, cut_bp, None
+        prev_rec["end"] = tf
+        ctx.shots[prev_rec["s"]["id"]]["end"] = tf
+    lint.info.append(f"{s['id']}:切点 {cut} → {tf}(吸附到重音 #{a['i']},{a['kind']} s={a['s']:.2f})")
+    return tf, None, {"from": cut, "to": tf, "accent": a["i"]}
+
+
+def speed_keys(ctx, lint, speed, cut, dur, where):
+    """变速关键点 [[位置, 速度], …] → [[进度 0–1, 速度], …]。位置写数字 = 进度(照旧);写时间点 T(比如 {"beat": 34})
+    就按画面帧换算:进度 = (T 的帧 − 切点) / 镜长。出错返回 1(恒速)并记错误。"""
+    out = []
+    for p in speed:
+        if not (isinstance(p, (list, tuple)) and len(p) == 2):
+            lint.err(f"[速度] {where}:速度关键点要写成 [[进度0–1 或时间点, 速度], …],这一项是 {p!r}")
+            return 1
+        pos, v = p
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            lint.err(f"[速度] {where}:关键点 {json.dumps(p, ensure_ascii=False)} 的速度要写数字")
+            return 1
+        if isinstance(pos, dict):
+            f, _ = ctx.T(pos, f"{where} 的变速关键点")
+            if f is None:
+                return 1
+            prog = (f - cut) / max(1, dur)
+            if prog < -EPS or prog > 1 + EPS:
+                lint.err(f"[速度] {where}:变速关键点 {json.dumps(pos, ensure_ascii=False)} 在帧 {f},不在本镜 {cut}–{cut + dur} 之内")
+                return 1
+            out.append([round(min(1.0, max(0.0, prog)), 5), float(v)])
+        elif isinstance(pos, (int, float)) and not isinstance(pos, bool):
+            out.append([float(pos), float(v)])
+        else:
+            lint.err(f"[速度] {where}:关键点位置要写 0–1 的进度或时间点,现在是 {pos!r}")
+            return 1
+    if not out:
+        lint.err(f"[速度] {where}:速度关键点是空的")
+        return 1
+    return sorted(out, key=lambda q: q[0])
+
+
+def norm_logo(v, where, lint, proj):
+    """Logo 写法标准化:字符串或 {"src", "w"?, "h"?, "invert"?} → 对象;不合法记错误并返回 None。"""
+    if isinstance(v, str):
+        obj = {"src": v}
+    elif isinstance(v, dict):
+        obj = dict(v)
+    else:
+        lint.err(f"[Logo] {where}:要写字符串路径或 {{\"src\": …, \"w\": …}},现在是 {v!r}")
+        return None
+    src = obj.get("src")
+    if not isinstance(src, str) or not src.strip():
+        lint.err(f"[Logo] {where}:缺 src 或 src 为空({json.dumps(v, ensure_ascii=False)})")
+        return None
+    for k in ("w", "h"):
+        if k in obj and (isinstance(obj[k], bool) or not isinstance(obj[k], (int, float)) or obj[k] <= 0):
+            lint.err(f"[Logo] {where}:{k} 要写正数(像素),现在是 {obj[k]!r}")
+            obj.pop(k)
+    if not re.match(r"^(https?:|data:)", src) and not os.path.exists(os.path.join(proj, "public", src)):
+        lint.warn(f"[Logo] {where}:public/{src} 不存在")
+    return obj
+
+
 # ───────────────────────── 编译 ─────────────────────────
 
 def compile_project(proj, quiet=False):
@@ -387,6 +545,16 @@ def compile_project(proj, quiet=False):
     beats = jload(os.path.join(proj, "beats.json"))
     if beats:
         ctx.grid = Grid(beats, fps, m_at, music.get("trim_s", 0) if music else None)
+        raw_acc = beats.get("accents")
+        if isinstance(raw_acc, list):
+            # 重音 t 是音乐文件时间:成片秒 = t − 实际 trim + 音乐起点
+            mt = float(music.get("trim_s", 0) or 0) if music else float(beats.get("trim_s", 0) or 0)
+            shift = m_at / fps - mt
+            ctx.accents = []
+            for i, a in enumerate(raw_acc):
+                tf = float(a["t"]) + shift
+                ctx.accents.append({"i": i, "t": round(tf, 4), "t_music": float(a["t"]), "f": int(round(tf * fps)),
+                                    "s": float(a.get("s", 0)), "kind": a.get("kind", ""), "in_film": tf >= -0.5 / fps})
     elif style in BEAT_STYLES:
         lint.warn(f"[拍] 卡点类风格({style})没有 beats.json,切点不做卡拍检查")
 
@@ -426,6 +594,7 @@ def compile_project(proj, quiet=False):
     for L in layers:
         seq = [s for s in raw if int(s.get("layer", 0)) == L]
         prev_end, prev_bp = (0, None)
+        prev_rec = None
         for k, s in enumerate(seq):
             where = f"镜头 {s['id']}"
             if "at" in s:
@@ -453,10 +622,14 @@ def compile_project(proj, quiet=False):
             if end <= cut:
                 lint.err(f"[镜头] {where}:结尾 {end} 不晚于切点 {cut}")
                 end = cut + 1
-            rec = {"s": s, "layer": L, "cut": cut, "end": end, "cut_bp": cut_bp, "end_bp": end_bp}
+            snapped = None
+            if s.get("snap") is not None:
+                cut, cut_bp, snapped = snap_cut(ctx, lint, s, where, L, k, cut, cut_bp, end, prev_rec)
+            rec = {"s": s, "layer": L, "cut": cut, "end": end, "cut_bp": cut_bp, "end_bp": end_bp, "snapped": snapped}
             placed.append(rec)
             ctx.shots[s["id"]] = {"cut": cut, "end": end}
             prev_end, prev_bp = end, end_bp
+            prev_rec = rec
         if L == 0:
             if duration is None:
                 duration = max((r["end"] for r in placed if r["layer"] == 0), default=0)
@@ -528,10 +701,10 @@ def compile_project(proj, quiet=False):
         dur = r["end"] - r["cut"]
         speed = s.get("speed", 1)
         if isinstance(speed, list):
-            ok = all(isinstance(p, (list, tuple)) and len(p) == 2 for p in speed) and speed
-            if not ok:
-                lint.err(f"[速度] {where}:速度关键点要写成 [[进度0–1, 速度], …]")
-                speed = 1
+            speed = speed_keys(ctx, lint, speed, r["cut"], dur, where)
+        elif isinstance(speed, bool) or not isinstance(speed, (int, float)):
+            lint.err(f"[速度] {where}:speed 要写数字或关键点数组,现在是 {speed!r}")
+            speed = 1
         S, vmin, vmax, varies = speed_fn(speed, dur)
         if vmin <= 0:
             lint.err(f"[速度] {where}:速度必须大于 0(不支持倒放 / 静止,定格用 hold)")
@@ -578,6 +751,10 @@ def compile_project(proj, quiet=False):
         for k in ("color", "make_room", "light"):  # light:镜内光扫(模板扩展字段,帧号相对本镜切点)
             if k in s:
                 out[k] = s[k]
+        if s.get("allow_reuse"):
+            out["allow_reuse"] = True
+        if r.get("snapped"):
+            out["snapped"] = r["snapped"]  # {"from": 原切点, "to": 吸附后, "accent": 重音序号}
         r["out"] = out
         shots_out.append(out)
         if s.get("src") is None:
@@ -621,6 +798,7 @@ def compile_project(proj, quiet=False):
             "clip": f"clips/{sid}.mp4", "clip_frames": cf, "native_fps": round(nfps, 5),
             "src_in_s": round(t_in, 4), "src_out_s": round(src_t(dur), 4),
             "clip_in_s": c_in_w, "clip_out_s": c_out_w,
+            "src_used_s": [round(need_lo, 3), round(need_hi, 3)],  # 可见区间(含转场重叠)实际用到的源区间,复用检查 / coverage.py 用
         })
         profile = profiles.get(s["src"]) or info.get("profile") or "rec709"
         clip = {
@@ -659,14 +837,14 @@ def compile_project(proj, quiet=False):
             msg = f"[转场] {b['s']['id']}:采访说话中(两段 interview 之间)用了 {b['in_tr']['type']},只能硬切"
             (lint.err if style == "testimonial" else lint.warn)(msg)
 
-    # 卡拍检查
+    # 卡拍检查(落在强重音 ±HIT_WIN 帧内的切点不查网格:重音本身可以偏离网格几十毫秒)
     if ctx.grid and style in BEAT_STYLES:
         g = ctx.grid
         for r in main[1:]:
             bp = g.bp_of_frame(r["cut"])
             near = round(bp * 2) / 2
             d = r["cut"] - g.frame(near)
-            if abs(d) > 2:
+            if abs(d) > 2 and ctx.strong_near(r["cut"], HIT_WIN)[0] is None:
                 lint.warn(f"[卡拍] {r['s']['id']}:切点 {r['cut']} 离最近的 8 分音符({g.label(g.frame(near))},帧 {g.frame(near)})差 {d:+d} 帧")
 
     # ── 文字 ──
@@ -694,6 +872,29 @@ def compile_project(proj, quiet=False):
         o = {"id": tid, "type": typ, "from": f0, "to": f1, "z": tx.get("z", 10)}
         o.update(TEXT_DEFAULTS.get(typ, {}))
         o.update({k: v for k, v in tx.items() if k not in ("id", "type", "at", "dur")})
+        if typ == "endcard":
+            raw_logos = o.get("logos")
+            if raw_logos is None:
+                raw_logos = []
+            if isinstance(raw_logos, (str, dict)):
+                lint.warn(f"[Logo] {where}:logos 要写数组,已按一个 Logo 处理")
+                raw_logos = [raw_logos]
+            if not isinstance(raw_logos, list):
+                lint.err(f"[Logo] {where}:logos 要写数组,现在是 {raw_logos!r}")
+                raw_logos = []
+            logos = [norm_logo(v, f"{where} 的 logos[{j}]", lint, proj) for j, v in enumerate(raw_logos)]
+            o["logos"] = [x for x in logos if x]
+            if not raw_logos and not (pj.get("brand") or {}).get("logo_white"):
+                lint.err(f"[Logo] {where}:endcard 没写 logos,project.json 的 brand.logo_white 也没有,落版会是空的")
+        elif typ == "image":
+            if "src" not in o:
+                lint.err(f"[Logo] {where}:image 缺 src")
+            else:
+                lg = norm_logo(o["src"], f"{where} 的 src", lint, proj)
+                if lg:
+                    o["src"] = lg.pop("src")  # 模板 ImageText 按字符串读 src
+                    for k2, v2 in lg.items():
+                        o.setdefault(k2, v2)
         texts_out.append(o)
         if f0 < 0 or f1 > duration:
             lint.err(f"[文字] {where}:{f0}–{f1} 超出全片 0–{duration}")
@@ -793,29 +994,255 @@ def compile_project(proj, quiet=False):
     # ── 段落 ──
     sections = []
     for i, sc in enumerate(edit.get("sections", []) or []):
-        f0, _ = ctx.T(sc.get("at", 0), f"段落 {sc.get('name', i)}")
-        if f0 is not None:
-            sections.append({"name": sc.get("name", f"段 {i + 1}"), "from": f0})
+        name = str(sc.get("name", f"段 {i + 1}"))
+        where = f"段落 {name}"
+        f0, bp0 = ctx.T(sc.get("at", 0), where)
+        if f0 is None:
+            continue
+        kind = sc.get("kind")
+        if kind is None:
+            kind = "drop" if "drop" in name.lower() else "other"
+        elif kind not in SECTION_KINDS:
+            lint.warn(f"[段落] {where}:kind「{kind}」不认识(可用 {' / '.join(SECTION_KINDS)}),按 other 处理")
+            kind = "other"
+        to = None
+        if "dur" in sc:
+            to, _ = ctx.D(sc["dur"], f0, bp0, where)
+        sections.append({"name": name, "kind": kind, "from": f0, "to": to})
     sections.sort(key=lambda x: x["from"])
     for a_, b_ in zip(sections, sections[1:] + [{"from": duration}]):
-        a_["to"] = b_["from"]
+        if a_["to"] is None:
+            a_["to"] = b_["from"]
+        elif a_["to"] > b_["from"]:
+            lint.warn(f"[段落] {a_['name']}({a_['from']}–{a_['to']})和下一段(从 {b_['from']})重叠")
+        a_["to"] = max(a_["from"], min(a_["to"], duration))
 
     grid_out = None
     if ctx.grid:
         g = ctx.grid
         grid_out = {"bpm": round(g.bpm, 3), "beat_s": g.beat_s, "offset_s": round(g.offset, 4), "beats_per_bar": g.bpb,
                     "lead_frames": g.lead, "beat_frames": round(g.beat_f, 4)}
+    shots_sorted = sorted(shots_out, key=lambda o: (o["layer"], o["cut"]))
+    extras = write_extras(ctx, shots_sorted, texts_out, sections, duration, fps)
+    stats = rhythm_lints(ctx, lint, style, shots_sorted, sections, extras["cuts"], beats, fps)
     tl = {
         "fps": fps, "width": int(pj.get("width", 1920)), "height": int(pj.get("height", 1080)),
         "duration": duration, "style": style, "title": pj.get("title", edit.get("title", "")),
         "fonts": pj.get("fonts", {}), "brand": pj.get("brand", {}), "grid": grid_out, "sections": sections,
-        "shots": sorted(shots_out, key=lambda o: (o["layer"], o["cut"])),
+        "accents": extras["accents"], "cuts": extras["cuts"], "expected_dark": extras["expected_dark"],
+        "shots": shots_sorted,
         "texts": sorted(texts_out, key=lambda o: o["from"]),
         "captions": caps, "caption_style": cap_style,
         "audio": audio_out, "clips": clips_out,
+        "stats": stats,
         "lint": {"errors": lint.errors, "warnings": lint.warnings},
     }
     return tl, lint
+
+
+def write_extras(ctx, shots, texts, sections, duration, fps):
+    """timeline.json 的 accents / cuts / expected_dark。
+      accents        [{"i", "f", "t", "s", "kind"}]:成片里的重音(只列 0 ≤ f < duration 的)。i = beats.json 里的序号
+                     (= {"accent": i});f = 成片帧,**没减 lead**(音频时刻);画面要对准它就放在 f − grid.lead_frames;t = 成片秒。
+      cuts           [{"f", "shot", "type", "layer": 0, "black"?, "accent", "acc_d"}]:主轨每个切点(第一镜开头不算)。
+                     type = 进场转场类型;black = 本镜是 src 为 null 的黑场;accent = ±HIT_WIN 帧内最近强重音的序号(没有为 null),
+                     acc_d = 切点 − 该重音的画面目标帧。没有重音表时 accent / acc_d 都是 null。
+      expected_dark  [[from, to, "原因"]]:设计好的暗场(半开区间,帧):dip 转场窗口、src 为 null 的黑场镜头、
+                     最后一镜的 dip 出、endcard 深色面板。synccheck / qa 用它区分「设计的暗」和「意外黑场」。"""
+    acc = []
+    for a in ctx.accents or []:
+        if 0 <= a["f"] < duration:
+            acc.append({"i": a["i"], "f": a["f"], "t": round(a["t"], 3), "s": a["s"], "kind": a["kind"]})
+    main = [o for o in shots if o["layer"] == 0]
+    cuts = []
+    for o in main:
+        if o["cut"] <= 0:
+            continue
+        c = {"f": o["cut"], "shot": o["id"], "type": o["in_tr"]["type"], "layer": 0}
+        if not o.get("src"):
+            c["black"] = True
+        a, tf = ctx.strong_near(o["cut"], HIT_WIN) if ctx.accents is not None else (None, None)
+        c["accent"] = a["i"] if a else None
+        c["acc_d"] = (o["cut"] - tf) if a else None
+        cuts.append(c)
+    dark = []
+    for k, o in enumerate(main):
+        tr = o["in_tr"]
+        if tr["type"] == "dip":
+            dark.append([max(0, o["cut"] - tr["pre"]), min(duration, o["end"], o["cut"] + tr["post"]), f"dip 转场 → {o['id']}"])
+        if not o.get("src"):
+            dark.append([o["from"], o["to"], f"黑场镜头 {o['id']}"])
+    if main and main[-1]["out_tr"]["type"] == "dip":
+        last = main[-1]
+        dark.append([max(0, last["end"] - last["out_tr"]["len"]), min(duration, last["end"]), f"dip 出 {last['id']}"])
+    for t in texts:
+        if t.get("type") == "endcard":
+            dark.append([t["from"], min(duration, t["to"]), f"落版深色面板 {t['id']}"])
+    dark.sort(key=lambda x: (x[0], x[1]))
+    return {"accents": acc, "cuts": cuts, "expected_dark": dark}
+
+
+def _is_ramp(o):
+    sp = o.get("speed")
+    if not isinstance(sp, list) or not sp:
+        return False
+    vs = [v for _, v in sp]
+    return min(vs) < RAMP_MAX_SPEED and max(vs) - min(vs) > 0.05
+
+
+def _varies(o):
+    sp = o.get("speed")
+    return isinstance(sp, list) and len({v for _, v in sp}) > 1
+
+
+def rhythm_lints(ctx, lint, style, shots, sections, cuts, beats, fps):
+    """节奏和复用的 lint,返回 stats(写进 timeline.json)。阈值见文件开头的常量。
+
+    范围:「drop 段」= sections 里 kind 为 drop 的区间(按切点帧归段)。hype 没标 drop 段时按整条主轨算,并警告。
+    1. 同源复用(所有风格,所有层):同一 src 的源区间(src_used_s,含转场重叠)两两重叠 > 0.2 s → 错误;
+       同一 src 用 ≥ 3 次 → 警告(同层首尾相接、源时间也接得上的同源接续算一次;interview 镜头和开了原声的镜头不计次数);
+       hype / launch / manifesto 主轨「不同素材数 / 有素材的镜头数」< 0.7 → 警告。
+       任一镜写了 "allow_reuse": true 就豁免与它有关的重叠和次数检查,并在输出里列出来。
+    2. 重音命中(hype / launch):主轨硬切(cut / punch / whip,有素材的镜头)落在强重音 ±2 帧内的比例。
+       有 drop 段时只统计 drop 段里的硬切 —— 暗场、加速蒙太奇(手册要求按 8 分音符 2-2-1-1-1-1 切)、停拍、撤鼓
+       本来就没有鼓,算进去会把定版片判错(brp 燃剪全片 20/28 = 71%,drop 段 11/12 = 92%)。
+       hype < 0.6 错误、< 0.75 警告;launch < 0.6 警告。参与统计的硬切 < 4 个只提示。
+    3. 变速(hype):drop 段一处变速坡都没有 → 错误;少于 2 处 → 警告;连续 > 4 个恒速镜头 → 警告。
+       变速坡 = speed 是关键点数组、有变化、最小值 < 0.9。
+    4. 碎镜(hype):drop 段短于 1.5 s 的镜头,个数占比 > 40% 且时长占比 > 30% → 警告。
+    5. 起音密度(卡点类):beats.json 的 onset_density.mean > 15/s 且 drop 段平均镜长 < 1.6 s → 警告。"""
+    main = [o for o in shots if o["layer"] == 0]
+    main_src = [o for o in main if o.get("src")]
+    drop_secs = [sc for sc in sections if sc.get("kind") == "drop"]
+
+    def in_drop(f):
+        return any(sc["from"] <= f < sc["to"] for sc in drop_secs)
+
+    stats = {"accent_hit": None, "drop": None, "reuse": [], "allow_reuse": [], "distinct_src": 0, "main_src_shots": len(main_src),
+             "onset_density": (beats or {}).get("onset_density", {}).get("mean") if beats else None}
+
+    # ── 1. 同源复用 ──
+    by_src = {}
+    for o in shots:
+        if o.get("src") and o.get("src_used_s"):
+            by_src.setdefault(o["src"], []).append(o)
+    allow = sorted({o["id"] for o in shots if o.get("allow_reuse")})
+    stats["allow_reuse"] = allow
+    for src, os_ in by_src.items():
+        os_.sort(key=lambda o: o["src_used_s"][0])
+        for i in range(len(os_)):
+            for j in range(i + 1, len(os_)):
+                a, b = os_[i], os_[j]
+                ov = min(a["src_used_s"][1], b["src_used_s"][1]) - max(a["src_used_s"][0], b["src_used_s"][0])
+                if ov > REUSE_OVERLAP_S:
+                    msg = (f"[复用] {a['id']} 和 {b['id']} 用了同一条素材 {src} 的重叠区间 "
+                           f"{max(a['src_used_s'][0], b['src_used_s'][0]):.2f}–{min(a['src_used_s'][1], b['src_used_s'][1]):.2f}s(重叠 {ov:.2f}s)")
+                    if a.get("allow_reuse") or b.get("allow_reuse"):
+                        lint.info.append(msg + ",已用 allow_reuse 豁免")
+                    else:
+                        lint.err(msg + ":同一段画面出现两次。换素材,或确实要复用时写 \"allow_reuse\": true 并在 note 里写理由")
+        # 次数:同层首尾相接、源时间接得上的算一次
+        countable = sorted([o for o in os_ if (o.get("move") or {}).get("type") != "interview" and not o.get("audio")],
+                           key=lambda o: (o["layer"], o["cut"]))
+        uses = []
+        for o in countable:
+            if uses:
+                p = uses[-1][-1]
+                if p["layer"] == o["layer"] and p["end"] == o["cut"] and abs(p["src_out_s"] - o["src_in_s"]) <= 2.0 / max(1.0, o.get("native_fps") or 30):
+                    uses[-1].append(o)
+                    continue
+            uses.append([o])
+        if len(uses) >= REUSE_COUNT_WARN:
+            ids = ["+".join(x["id"] for x in u) for u in uses]
+            entry = {"src": src, "uses": len(uses), "shots": ids,
+                     "ranges": [[u[0]["src_used_s"][0], u[-1]["src_used_s"][1]] for u in uses]}
+            stats["reuse"].append(entry)
+            if any(x.get("allow_reuse") for u in uses for x in u):
+                lint.info.append(f"[复用] {src} 用了 {len(uses)} 次({'、'.join(ids)}),已用 allow_reuse 豁免")
+            else:
+                lint.warn(f"[复用] {src} 用了 {len(uses)} 次({'、'.join(ids)}):先回没用过的素材里找(coverage.py 列未用清单)")
+    distinct = len({o["src"] for o in main_src})
+    stats["distinct_src"] = distinct
+    if style in DISTINCT_STYLES and len(main_src) >= 5 and distinct / len(main_src) < DISTINCT_MIN:
+        lint.warn(f"[复用] 主轨 {len(main_src)} 个有素材的镜头只用了 {distinct} 条不同素材(比例 {distinct / len(main_src):.2f} < {DISTINCT_MIN}):"
+                  "素材要铺开用,跑 coverage.py 看未用清单")
+    if allow:
+        lint.info.append("显式允许复用(allow_reuse):" + "、".join(allow))
+
+    # ── 2. 重音命中 ──
+    if style in ("hype", "launch"):
+        if beats is None:
+            lint.warn("[重音] 没有 beats.json,查不了切点是否落在重音上:先跑 tempo.py")
+        elif ctx.accents is None:
+            lint.warn("[重音] beats.json 里没有重音表 accents(旧版 tempo.py 写的):重跑 tempo.py,"
+                      "或 tempo.py <音乐> --out beats.json --accents-only 只补重音表")
+        else:
+            hard = [c for c in cuts if c["type"] in HARD_CUTS and not c.get("black")]
+            scope = "drop" if drop_secs else "all"
+            judged = [c for c in hard if in_drop(c["f"])] if drop_secs else hard
+            hits = [c for c in judged if c["accent"] is not None]
+            all_hits = [c for c in hard if c["accent"] is not None]
+            rate = len(hits) / len(judged) if judged else None
+            stats["accent_hit"] = {"rate": round(rate, 3) if rate is not None else None, "hits": len(hits), "n": len(judged),
+                                   "scope": scope, "all_rate": round(len(all_hits) / len(hard), 3) if hard else None,
+                                   "all_hits": len(all_hits), "all_n": len(hard),
+                                   "miss": [c["shot"] for c in judged if c["accent"] is None]}
+            where = "drop 段" if drop_secs else "主轨"
+            if rate is not None:
+                msg = (f"[重音] {where}硬切落在强重音(s ≥ {STRONG_S})±{HIT_WIN} 帧内的只有 {len(hits)}/{len(judged)} = {rate:.0%}"
+                       f";没落上的:{'、'.join(stats['accent_hit']['miss'][:12])}{' …' if len(stats['accent_hit']['miss']) > 12 else ''}。"
+                       "关键的刀写 {\"accent\": n},其余加 \"snap\": \"accent\"(bands.py 看每小节最强重音在哪一拍)")
+                if len(judged) < HIT_MIN_N:
+                    lint.info.append(f"{where}只有 {len(judged)} 个硬切,重音命中率 {rate:.0%} 不判")
+                elif style in HIT_ERR and rate < HIT_ERR[style]:
+                    lint.err(msg)
+                elif style in HIT_WARN and rate < HIT_WARN[style]:
+                    lint.warn(msg)
+
+    # ── 3–5. drop 段的变速、碎镜、密度 ──
+    if style in ("hype", "launch", "manifesto"):
+        if drop_secs:
+            dshots = [o for o in main_src if in_drop(o["cut"])]
+        else:
+            dshots = list(main_src)
+            if style == "hype" and main_src:
+                lint.warn("[段落] 燃剪没标 drop 段(sections 里写 \"kind\": \"drop\"):变速、碎镜检查按整条主轨算")
+        if dshots:
+            lens = [o["end"] - o["cut"] for o in dshots]
+            ramps = [o["id"] for o in dshots if _is_ramp(o)]
+            short = [o for o, ln in zip(dshots, lens) if ln < SHORT_SHOT_S * fps]
+            cshare = len(short) / len(dshots)
+            tshare = sum(o["end"] - o["cut"] for o in short) / max(1, sum(lens))
+            avg = sum(lens) / len(lens) / fps
+            run, best_run = [], []
+            for o in dshots:
+                if _varies(o):
+                    run = []
+                else:
+                    run.append(o["id"])
+                    if len(run) > len(best_run):
+                        best_run = list(run)
+            stats["drop"] = {"scope": "drop" if drop_secs else "all", "shots": len(dshots), "avg_s": round(avg, 2),
+                             "ramps": ramps, "const_run": best_run, "short": [o["id"] for o in short],
+                             "short_count_share": round(cshare, 3), "short_time_share": round(tshare, 3)}
+            where = "drop 段" if drop_secs else "主轨"
+            if style == "hype":
+                if not ramps:
+                    lint.err(f"[变速] {where} {len(dshots)} 镜一处变速坡都没有:至少 1 处、最好 2–3 处(speed 写关键点,"
+                             "坡心落拍,关键点位置可以直接写 {\"beat\": n};写法见 styles/hype.md)")
+                elif len(ramps) < 2:
+                    lint.warn(f"[变速] {where}只有 1 处变速坡({ramps[0]}),手册要 2–3 处")
+                if len(best_run) > CONST_RUN_MAX:
+                    lint.warn(f"[变速] {where}连续 {len(best_run)} 个恒速镜头({best_run[0]}–{best_run[-1]}),超过 {CONST_RUN_MAX} 个:"
+                              "中间插一处变速坡,或换成画面内有加减速的镜头")
+                if len(dshots) >= 3 and cshare > SHORT_COUNT_SHARE and tshare > SHORT_TIME_SHARE:
+                    lint.warn(f"[碎镜] {where}短于 {SHORT_SHOT_S:g} s 的镜头 {len(short)}/{len(dshots)}(个数 {cshare:.0%}、时长 {tshare:.0%}):"
+                              "动作可能被切碎,按动作长度排,不按固定拍数排")
+            dens = stats["onset_density"]
+            if isinstance(dens, (int, float)) and dens > DENSE_ONSETS and avg < DENSE_AVG_S:
+                lint.warn(f"[节奏] 配乐起音密度 {dens}/s(> {DENSE_ONSETS:g}),{where}平均镜长 {avg:.2f} s(< {DENSE_AVG_S:g}):"
+                          "鼓组很密时 8 分音符网格上处处有起音,按 4 分音符和强重音切,8 分音符留给动作内部")
+    return stats
 
 
 def remap_words(words, main_rec, fps, lint):
@@ -863,18 +1290,42 @@ def summary(tl, lint, quiet=False):
     print(f"全片 {D} 帧 = {tc(D, fps)}({D / fps:.2f} s)· 风格 {tl['style']} · 主轨 {n} 镜、插入 {len(ins)} 镜 · "
           f"平均镜长 {D / max(1, n):.1f} 帧({D / max(1, n) / fps:.2f} s)· 文字 {len(tl['texts'])} · 字幕 {len(tl['captions'])} · "
           f"音效 {len(tl['audio']['sfx'])} · 原声段 {len(tl['audio']['voice'])}")
+    st = tl.get("stats") or {}
+    bits = []
+    if st.get("main_src_shots"):
+        bits.append(f"不同素材 {st['distinct_src']}/{st['main_src_shots']} 镜")
+    ah = st.get("accent_hit")
+    if ah and ah.get("n"):
+        bits.append(f"重音命中({'drop 段' if ah['scope'] == 'drop' else '主轨'}){ah['hits']}/{ah['n']} = {ah['rate']:.0%}"
+                    + (f"(全片硬切 {ah['all_hits']}/{ah['all_n']})" if ah["scope"] == "drop" and ah.get("all_n") else ""))
+    dp = st.get("drop")
+    if dp:
+        bits.append(f"{'drop 段' if dp['scope'] == 'drop' else '主轨'} {dp['shots']} 镜、平均 {dp['avg_s']:.2f} s、变速坡 {len(dp['ramps'])} 处、"
+                    f"短于 1.5 s 的 {len(dp['short'])} 镜")
+    if st.get("onset_density") is not None:
+        bits.append(f"配乐起音 {st['onset_density']}/s")
+    if bits:
+        print("  " + " · ".join(bits))
     secs = tl["sections"]
     if not secs:
         g = tl.get("grid")
         step = int(round(g["beat_frames"] * g["beats_per_bar"] * 8)) if g else 30 * fps
-        secs = [{"name": f"{tc(a, fps)}", "from": a, "to": min(D, a + step)} for a in range(0, D, max(1, step))]
+        secs = [{"name": f"{tc(a, fps)}", "kind": "", "from": a, "to": min(D, a + step)} for a in range(0, D, max(1, step))]
     if not quiet:
-        print("  段落              帧            镜数  平均镜长   每分钟切点")
+        cut_acc = {c["shot"]: c for c in tl.get("cuts") or []}
+        has_acc = bool(tl.get("accents")) or any(c.get("accent") is not None for c in cut_acc.values())
+        print("  段落           类型         帧          镜数  平均镜长  每分钟切点  变速  重音命中  素材数")
         for sc in secs:
             cuts = [s for s in main if sc["from"] <= s["cut"] < sc["to"]]
             ln = sc["to"] - sc["from"]
             avg = (sum(min(s["end"], sc["to"]) - s["cut"] for s in cuts) / len(cuts)) if cuts else 0
-            print(f"  {sc['name'][:14]:14s} {sc['from']:5d}–{sc['to']:<5d}  {len(cuts):5d}  {avg / fps:6.2f} s   {len(cuts) / max(1, ln) * fps * 60:7.1f}")
+            var = sum(1 for s in cuts if isinstance(s.get("speed"), list) and len({v for _, v in s["speed"]}) > 1)
+            hard = [cut_acc[s["id"]] for s in cuts if s["id"] in cut_acc and cut_acc[s["id"]]["type"] in HARD_CUTS
+                    and not cut_acc[s["id"]].get("black")]
+            hit = f"{sum(1 for c in hard if c['accent'] is not None)}/{len(hard)}" if (has_acc and hard) else "—"
+            nsrc = len({s["src"] for s in cuts if s.get("src")})
+            print(f"  {sc['name'][:12]:12s} {sc.get('kind', '')[:9]:9s} {sc['from']:5d}–{sc['to']:<5d}  {len(cuts):5d}  {avg / fps:6.2f} s"
+                  f"  {len(cuts) / max(1, ln) * fps * 60:8.1f}  {var:4d}  {hit:>8s}  {nsrc:5d}")
     for m in lint.info:
         print(f"  ℹ️ {m}")
     for w in lint.warnings:

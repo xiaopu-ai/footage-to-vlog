@@ -8,7 +8,12 @@
 - **两个 ffmpeg 别用管道接**：后一个会等前一个的锁，卡死。确实要接，就把整条管道放进一次 `queue.sh` 里。
 - **Remotion 并发**：`--concurrency=4` 足够。并发 4 / 3 / 2 占核差不多，画面差 55 dB 以上。
 
+- **休眠会让长任务空转**：用户离开、电脑休眠时 ffmpeg 会被挂起，单条片段从约 10 秒拖到约 15 分钟。`queue.sh` 拿到锁后会在 macOS 上用 `caffeinate -i`、在 Linux 上用 `systemd-inhibit` 包住命令；`make_clips.py` 发现单条耗时超过预期 10 倍会提示。
+- **缓存目录要可写、盘点要对账**：有的 agent 跑在沙箱里，写不了 `~/.cache`。`inventory.py` 的缓存优先级是 `FTV_CACHE` → 项目内 `work/cache` → `~/.cache` → 只存内存，写不进只警告，不会让分析失败。盘点必须对账：发现数 = 分析成功 + 失败，排除的单列；有失败退出码 2，不能当成完成。用 `--include` 圈定素材目录，免得把成片、旧项目扫进去。曾经有 43 条航拍因为缓存写不进去被静默漏掉。
+
 ## Remotion
+
+- **不要用 Remotion 带声音的直出当成片**：两次实测都发现直出的 AAC 音轨比画面晚约 40 ms；JPEG 帧渲染出来是全范围 BT.601，播放器会偏色；整片还多 2 帧。用 `render.py`：静音渲画面（PNG、yuv420p、BT.709），`mix.py` 出规范混音，再用 ffmpeg 封装并补齐色彩标签。
 
 - `public/` 里不要放**文件软链**：Remotion 的静态服务器会 404，渲染直接失败。复制或用硬链接（`ln 源 目标`）；整个目录做软链可以。
 - 模板逐帧取画用 `<Freeze frame={0}><OffthreadVideo trimBefore={帧号}/></Freeze>`；写成 `<Freeze frame={帧号}>` 会被夹到「合成时长 − 1」，片段帧号一大就卡住。
@@ -45,3 +50,8 @@
 
 - 每个阶段结束就写 `HANDOFF.md`。上下文太长（每次调用重读 50 万以上 token）时，换新会话接着做。访谈示例片前两个阶段花掉了总费用的 71%。
 - 大段工具输出（素材元数据、转写全文）写进文件，只读需要的那几行。
+
+## 审核介质
+
+- 有的 agent 界面放不了本地 mp3 / mp4，连对话里的图片都不显示。所有审核节点统一用本地网页（`review/build_review.py` + `review/serve_local.py`），从第 1 个节点就这样做，不要先贴文件试试看。
+- 本地服务要支持 HTTP Range，否则 Safari 的 `<audio>` / `<video>` 播不了。`python3 -m http.server` 不支持，用 skill 自带的 `serve_local.py`。

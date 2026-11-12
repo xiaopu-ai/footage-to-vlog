@@ -3,7 +3,7 @@
 
 用法:
   python3 scripts/sheet.py <静帧目录>                                   # 目录里的 f*.png(template/tools/stills.mjs 的输出)
-  python3 scripts/sheet.py --video out/film.mp4 --fps 2 --out /tmp/remotion-check/sheet.jpg
+  python3 scripts/sheet.py --video out/film.mp4 --fps 2 --out work/qa/sheet.jpg
   python3 scripts/sheet.py --video out/film.mp4 --fps 5 --from 1.6 --to 8 --cols 6 --width 420
 
 整片 QA 用 2fps;看一段动作连不连贯用 5–10fps;细节再用 template/tools/stills.mjs --scale=1 渲全分辨率。

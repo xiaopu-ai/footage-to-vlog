@@ -18,7 +18,16 @@
   p5 / p95 偏离全片中位超过 0.03(3 个百分点)→ 建议 fix.levels = "auto";p5 < 0.04 提示暗部压死,p95 > 0.95 提示高光削顶。
   建议是一步估算(色表是非线性的),改完再跑一次核对;--refine 会自动多量一轮。
 
-产物:终端表格 + JSON(timeline 模式默认 <proj>/work/measure.json)
+色表和 levels 冲突(timeline 模式;量的是调色后的全链:技术 LUT + fix + look):
+  开着 fix.levels("auto" 或手写 p5/p95)的镜头,调色后 p5 < 0.02 或 p95 > 0.96 → 判定「色表和 levels 冲突」:
+  levels 先把 p5 / p95 拉到 levels_target,强对比色表的 S 曲线再压一次,暗部压死、高光削顶(实测 p5 0.000–0.011、p95 0.958–0.985)。
+  对冲突的镜头再量两种改法,把结果一起打印:
+    改法 1:去掉 levels,改用 exposure / warm(建议值按全片中位算好,写进 suggest);
+    改法 2:project.json 的 levels_target 收到 [0.06, 0.86](全片生效,给曲线留余量)。
+  没开 levels 却越线的,提示「色表 / 曝光本身压死 / 削顶」。--refine 时,建议里新加的 levels auto 如果会冲突,也会提示。
+
+退出码:0 正常;3 有镜头色表和 levels 冲突(建议照上面改完再量);1 / 2 出错。
+产物:终端表格 + JSON(timeline 模式默认 <proj>/work/measure.json;冲突写在每镜的 "conflict" 和顶层 "conflicts")
 """
 import argparse
 import json
@@ -47,7 +56,7 @@ def avg_stats(ss):
     return {k: round(sum(s[k] for s in ss) / len(ss), 4) for k in keys}
 
 
-def measure_clip(proj, project, c, footage, handles, fix_override=None, levels_cache=None):
+def measure_clip(proj, project, c, footage, handles, fix_override=None, levels_cache=None, target=None):
     e = L.source_entry(proj, project, c["src"], footage=footage, profile=c.get("profile"))
     lut = L.resolve_lut(proj, project, e["profile"])
     look_rel = c["look"] if "look" in c else project.get("look")
@@ -60,7 +69,7 @@ def measure_clip(proj, project, c, footage, handles, fix_override=None, levels_c
     if b - a > 2 * handles + 0.1:
         a, b = a + handles, b - handles
     hw = L.hw_candidate(e) and L.use_hwaccel(e["_abs"], e, lut)
-    target = tuple(project.get("levels_target") or L.DEFAULT_LEVELS_TARGET)
+    target = tuple(target or project.get("levels_target") or L.DEFAULT_LEVELS_TARGET)
     levels = None
     if fix.get("levels") == "auto":
         key = (c["id"], json.dumps({k: v for k, v in fix.items() if k != "levels"}, sort_keys=True))
@@ -74,7 +83,10 @@ def measure_clip(proj, project, c, footage, handles, fix_override=None, levels_c
     for k in (0.25, 0.5, 0.75):
         rgb = L.rgb_frame(e, a + (b - a) * k, 480, 270, lut, fix, levels, target, look, hw, depth=16)
         ss.append(L.frame_stats(rgb))
-    return avg_stats(ss), fix
+    st = avg_stats(ss)
+    st["p5_min"] = round(min(s["p5"] for s in ss), 4)   # 冲突按最差的一帧判:一帧压死就是压死
+    st["p95_max"] = round(max(s["p95"] for s in ss), 4)
+    return st, fix
 
 
 def suggest(st, fix, t_rb, t_p50, med):
@@ -112,6 +124,10 @@ def refine(r, measure, t_rb, t_p50):
     if "warm" in fix0:
         fa["warm"] = fix0["warm"]
     sa = measure(fa) if fa != fix0 else s0
+    if L.levels_on(fa) and not L.levels_on(fix0):
+        g = L.grade_check(sa.get("p5_min", sa["p5"]), sa.get("p95_max", sa["p95"]), fa, True)
+        if g and g["kind"] == "levels-conflict":
+            r["notes"].append("⚠️ 建议的 levels auto 会和色表冲突(%s),别加,改用 exposure" % g["msg"].split(":", 1)[-1])
     e0, e1 = float(fix0.get("exposure") or 0), float(fa.get("exposure") or 0)
     if "exposure" in sug and fa.get("levels") != "auto" and abs(e1 - e0) > 1e-3 and sa["p50"] > 0.01:
         slope = (math.log2(sa["p50"]) - math.log2(s0["p50"])) / (e1 - e0)  # 每档 p50 变化(log2)
@@ -135,6 +151,54 @@ def refine(r, measure, t_rb, t_p50):
         sug["warm"] = fix0["warm"]
     r["suggest"] = sug
     r["notes"].append(note)
+
+
+def resolve_conflict(r, measure, t_rb, t_p50, project):
+    """色表和 levels 冲突的镜头:量「去掉 levels」和「levels_target 收到 [0.06, 0.86]」两种改法,给出建议。"""
+    fix0 = r["fix"]
+    no_lv = {k: v for k, v in fix0.items() if k != "levels"}
+    s1 = measure(no_lv, None)
+    sug = dict(no_lv)
+    if s1["p50"] > 0.01:
+        ev = 2.2 * math.log2(t_p50 / s1["p50"])
+        if abs(ev) > 0.15:
+            sug["exposure"] = round(max(-1.5, min(1.5, float(no_lv.get("exposure") or 0) + ev)), 2)
+    d_rb = s1["rb_mid"] - t_rb
+    if abs(d_rb) > 2.5 and d_rb == d_rb:
+        sug["warm"] = round(float(no_lv.get("warm") or 0) + d_rb / RB_PER_K, 3)
+    s2 = measure(fix0, L.SAFE_LEVELS_TARGET) if fix0.get("levels") == "auto" else None
+    cur = tuple(project.get("levels_target") or L.DEFAULT_LEVELS_TARGET)
+    r["conflict"].update({
+        "option1": {"fix": sug, "before_exposure": {"p5": s1["p5"], "p50": s1["p50"], "p95": s1["p95"]}},
+        "option2": ({"levels_target": list(L.SAFE_LEVELS_TARGET), "result": {"p5": s2["p5_min"], "p95": s2["p95_max"]},
+                     "still_conflict": bool(L.grade_check(s2["p5_min"], s2["p95_max"], fix0, True))}
+                    if s2 else None),
+        "levels_target_now": list(cur),
+    })
+    r["suggest"] = sug
+
+
+def print_conflicts(rows):
+    cs = [r for r in rows if r.get("conflict")]
+    if not cs:
+        return
+    print("\n⚠️ %d 镜色表和 levels 冲突(调色后全链,按最差一帧;阈值 p5 < %.2f 或 p95 > %.2f):"
+          % (len(cs), L.CONFLICT_P5, L.CONFLICT_P95))
+    for r in cs:
+        c = r["conflict"]
+        print("  %-10s %s" % (r["id"], c["msg"]))
+        o1 = c.get("option1")
+        if o1:
+            b = o1["before_exposure"]
+            print("    改法 1:去掉 levels,改用 exposure / warm → fix %s(不带 levels 时 p5 %.3f p50 %.3f p95 %.3f,再按建议曝光对齐)"
+                  % (json.dumps(o1["fix"], ensure_ascii=False), b["p5"], b["p50"], b["p95"]))
+        o2 = c.get("option2")
+        if o2:
+            print("    改法 2:project.json 的 levels_target %s → %s(全片生效)→ p5 %.3f p95 %.3f%s"
+                  % (c["levels_target_now"], o2["levels_target"], o2["result"]["p5"], o2["result"]["p95"],
+                     ",仍然越线,用改法 1" if o2["still_conflict"] else ""))
+        elif not o1:
+            print("    改法:%s" % c["advice"])
 
 
 def table(rows, t_rb, t_p50):
@@ -182,7 +246,8 @@ def main():
             if want and c["id"] not in want:
                 continue
             st, fix = measure_clip(proj, project, c, footage, handles, levels_cache=cache)
-            rows.append({"id": c["id"], "src": c["src"], "stats": st, "fix": fix, "_clip": c})
+            rows.append({"id": c["id"], "src": c["src"], "stats": st, "fix": fix, "_clip": c,
+                         "_look": (c["look"] if "look" in c else project.get("look"))})
             print("  量完 %-10s p50 %.3f R−B %.1f" % (c["id"], st["p50"], st["rb_mid"]), flush=True)
         out_json = Path(a.json) if a.json else proj / "work" / "measure.json"
 
@@ -194,21 +259,50 @@ def main():
     for r in rows:
         r["suggest"], r["notes"] = suggest(r["stats"], r["fix"], t_rb, t_p50, med)
 
+    n_conflict = 0
+    if not imgs:
+        for r in rows:
+            st = r["stats"]
+            g = L.grade_check(st.get("p5_min", st["p5"]), st.get("p95_max", st["p95"]), r["fix"], r["_look"])
+            if g:  # 已经越线:通用的「暗部压死 / 高光削顶」提示换成下面更具体的说明
+                r["notes"] = [x for x in r["notes"] if not x.startswith(("暗部压死", "高光削顶"))]
+            if g and g["kind"] == "crush" and L.levels_on(r["suggest"]) and not L.levels_on(r["fix"]):
+                r["suggest"] = {k: v for k, v in r["suggest"].items() if k != "levels"}  # 色表已经越线,再叠 levels 只会更糟
+                r["notes"] = [x for x in r["notes"] if "levels auto" not in x and "偏离全片中位" not in x]
+                r["notes"].append("p5/p95 和别的镜头差得多,但色表已经越线,不建议加 levels auto;先降曝光或换缓一点的色表")
+            if g and g["kind"] == "levels-conflict":
+                n_conflict += 1
+                r["conflict"] = dict(g)
+                r["notes"].insert(0, "⚠️ " + g["msg"])
+                try:
+                    resolve_conflict(r, lambda f, tg, r=r: measure_clip(proj, project, r["_clip"], footage, handles, fix_override=f,
+                                                                       levels_cache=cache, target=tg)[0], t_rb, t_p50, project)
+                except Exception as ex:  # noqa: BLE001  改法量不出来也要把冲突报出来
+                    r["notes"].append("改法没量出来:%s" % ex)
+            elif g:
+                r["notes"].append("⚠️ " + g["msg"] + "(" + g["advice"] + ")")
+
     if a.refine and not imgs:
         print("\n--refine:按建议实测修正…", flush=True)
         for r in rows:
-            if r["suggest"] != r["fix"]:
+            if r["suggest"] != r["fix"] and not r.get("conflict"):
                 refine(r, lambda f, r=r: measure_clip(proj, project, r["_clip"], footage, handles, fix_override=f,
                                                       levels_cache=cache)[0], t_rb, t_p50)
 
     table(rows, t_rb, t_p50)
+    print_conflicts(rows)
     for r in rows:
         r.pop("_clip", None)
+        r.pop("_look", None)
     if out_json:
         out_json.parent.mkdir(parents=True, exist_ok=True)
-        out_json.write_text(json.dumps({"target": {"rb_mid": t_rb, "p50": t_p50}, "median": med, "shots": rows},
+        out_json.write_text(json.dumps({"target": {"rb_mid": t_rb, "p50": t_p50}, "median": med, "shots": rows,
+                                        "conflicts": [r["id"] for r in rows if r.get("conflict")]},
                                        ensure_ascii=False, indent=1), "utf-8")
         print("✓", out_json)
+    if n_conflict:
+        print("✗ %d 镜色表和 levels 冲突(退出码 3):按上面的改法改 edit.json / project.json,重编译后再量" % n_conflict)
+        sys.exit(3)
 
 
 if __name__ == "__main__":

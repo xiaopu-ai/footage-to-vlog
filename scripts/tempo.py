@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""稳健测速:音乐 → beats.json(BPM、拍长、第一个小节头的相位、前几小节的拍点帧号)。
+"""稳健测速 + 重音表:音乐 → beats.json(BPM、拍长、第一个小节头的相位、前几小节的拍点帧号、重音表 accents、起音密度)。
 
 用法:
   python3 tempo.py <music.wav|mp3> [--from S] [--to S] [--trim_s S] [--out beats.json]
                    [--min-bpm 70] [--max-bpm 180] [--bpb 4] [--lead 1] [--fps 30]
-                   [--downbeat S] [--bars 16]
+                   [--downbeat S] [--bars 16] [--min-s 0.5] [--accents-only]
+
+  --accents-only  只重测重音表和起音密度,拍网格(bpm / offset_s / 小节头)沿用 --out 指向的已有 beats.json。
+                  用在:网格已经用 --downbeat 手动定好,或者按小节重剪(bar_edit.py)后的配乐拼接处拍网格拟合变差,
+                  但重音要按剪好的这一版重新量。不加这个参数时,网格和重音一起重测(剪过的配乐照常整体重跑一遍即可)。
+  --min-s         重音表只写强度百分位 s ≥ 这个值的(默认 0.5)。
 
   --from / --to   只拟合这一段(原曲秒数)。生成的配乐常常不按计划走(前奏没鼓、中间断音、结尾散拍),
                   只拿鼓点稳定的段落拟合,网格会自动外推到全曲。
@@ -33,10 +38,36 @@
   第 n 拍(从 0 数)的起音时刻 = offset_s + n × beat_s 秒;preview 里是 round(秒 × fps),没减 lead。
   timeline.py 的画面切点 = round(秒 × fps) − lead_frames。
 
-依赖:numpy;ffmpeg(PATH 里,或环境变量 FFMPEG)。只解码音频,是轻任务。
+重音表(切点要落在重音上,不只是落在网格上;配乐每秒十几次起音时,8 分音符网格上处处「有起音」,只查网格等于没查):
+  "accents": [{"t": 13.534, "s": 0.997, "kind": "hit", "eighth": 56, "dev_ms": -2}, ...]   按时间排序
+    t       起音时刻,**音乐文件时间**(秒,和 --trim_s 无关;timeline.py 按 edit.json 的 audio.music.at / trim_s 换算到成片)
+    s       强度在全曲起音里的百分位(0–1)。只写 s ≥ --min-s 的;s ≥ 0.7 算「强重音」(timeline.py 的命中率、snap 都用它)
+    kind    kick = 底鼓频段(30–150 Hz)起音最突出;snare = 军鼓 / 拍手频段(1.5–4 kHz)最突出;
+            hit = 宽频大冲击(段落砸点、drop、落版重击:总能量比前 2 s 的常态高出一截,且至少两个频段同时跳)
+    eighth  离它最近的 8 分音符序号(成片时间网格,和 edit.json 的 {"eighth": n} 同一套编号;offset_s 之前为负)
+    dev_ms  起音 − 那个 8 分音符(毫秒,正 = 起音在网格后面)
+    timeline.py 里写 {"accent": n} 就是这张表的第 n 项(从 0 数)。
+  "accent_stats": {"pool": 起音候选数, "pool_per_s", "listed": 写进表的个数, "strong_per_s": s ≥ 0.7 的每秒个数, "min_s", "strong_s": 0.7}
+  "onset_density": {"mean": 有声段平均每秒起音数, "max": 1 秒窗内最多, "active_s": 有声段秒数, "method": "…"}
+    和 bands.py 的 onsets/s 是同一套算法:2 kHz 以上频谱通量的峰,只数这一频段能量在全曲高位 30 dB 以内的时段
+    (静音、只有铺底的段落不数,避免把底噪当起音)。
+
+重音的算法(在 brp 三首配乐上校过:燃剪的暗黑失真贝斯、口号片的四拍 house、发布片的混合预告片风格):
+  1. 候选:底鼓频段、军鼓 / 拍手频段各自找起音峰(能量 dB 的上升沿,±60 ms 内最大,上升 ≥ 1.5 dB)。
+     同一下打击在两个频段各有一个峰(底鼓的「咔」在高频先到,低频能量上升沿晚 30–70 ms),70 ms 内合成一个,
+     时刻取组里够强的峰中最早的那个。kind:组里底鼓频段的峰够突出就是 kick,否则 snare。
+  2. 强度 = 加权总能量(低频 −6 dB、1.5–4 kHz +3 dB,近似人耳)在这一下的上升量 × 响度权重(比全曲高位每低 20 dB 权重减 1,
+     安静段降权)。底鼓、军鼓让整体响度跳一下,踩镲 / 沙锤几乎不动总响度;只看单个频段的上升量,
+     四拍 house 的反拍开镲会排到底鼓前面,失真贝斯铺满低频的燃剪里底鼓又会被淹掉(都实测过)。
+  3. 宽频大冲击:加权总能量峰后 50 ms 比前 2 s 的 90 分位高 ≥ 7 dB、四个频段里至少两个各自高 ≥ 4 dB、
+     响度在全曲高位 10 dB 以内,且是 ±1 s 内跳得最高的那个 → kind = hit,强度排最前。
+  4. s = 强度在全部起音候选里的百分位。
+
+依赖:numpy;ffmpeg(PATH 里,或环境变量 FFMPEG)。只解码音频,是轻任务。bands.py 会 import 本文件的起音 / 重音函数。
 """
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -232,6 +263,235 @@ def wrap(d, P):
     return (d + P / 2) % P - P / 2
 
 
+# ───────────────────────── 起音密度(bands.py 共用) ─────────────────────────
+
+ONSET_METHOD = "2 kHz 以上频谱通量的峰(NFFT 1024 / hop 256),阈值 = 有声段中位数 × 4;只数该频段能量在全曲 95 分位 30 dB 以内的时段"
+
+
+def onset_times(x, sr=SR):
+    """密集起音(和 bands.py 的 onsets/s 同一算法)。返回 (起音时刻数组, 帧时刻, 有声掩码)。
+    有声 = 2 kHz 以上能量在全曲 95 分位 30 dB 以内;静音、只有铺底的段落不数(否则底噪的小起伏会被数成每秒二三十个起音)。"""
+    n, hop = 1024, 256
+    nf = 1 + (len(x) - n) // hop
+    if nf < 3:
+        return np.array([]), np.array([]), np.array([], bool)
+    win = np.hanning(n).astype(np.float32)
+    f = np.fft.rfftfreq(n, 1 / sr)
+    hs = np.empty(nf)
+    for s in range(0, nf, 4096):
+        e = min(nf, s + 4096)
+        idx = np.arange(n)[None, :] + hop * np.arange(s, e)[:, None]
+        S = np.abs(np.fft.rfft(x[idx] * win, axis=1))
+        hs[s:e] = S[:, f >= 2000].sum(1)
+    flux = np.maximum(0, np.diff(np.log(hs + 1e-9), prepend=np.log(hs[0] + 1e-9)))
+    t = np.arange(nf) * hop / sr
+    hdb = 20 * np.log10(hs + 1e-9)
+    act = hdb > np.percentile(hdb, 95) - 30
+    if not act.any():
+        return np.array([]), t, act
+    thr = np.median(flux[act]) * 4
+    pk = np.zeros(nf, bool)
+    pk[1:-1] = (flux[1:-1] > flux[:-2]) & (flux[1:-1] >= flux[2:]) & (flux[1:-1] > thr)
+    pk &= act
+    return t[pk], t, act
+
+
+def onset_density(x, sr=SR):
+    on, t, act = onset_times(x, sr)
+    if not len(t):
+        return {"mean": 0.0, "max": 0, "active_s": 0.0, "method": ONSET_METHOD}
+    dur = t[-1]
+    nb = max(1, int(math.ceil(dur)))
+    cnt = np.histogram(on, bins=np.arange(nb + 1))[0]
+    dt = t[1] - t[0] if len(t) > 1 else 0.0116
+    act_s = float(act.sum() * dt)
+    # 1 秒窗只统计大半是有声段的窗(片头片尾的半截窗不算最大值)
+    full = np.array([act[(t >= i) & (t < i + 1)].mean() > 0.5 if ((t >= i) & (t < i + 1)).any() else False for i in range(nb)])
+    mx = int(cnt[full].max()) if full.any() else int(cnt.max())
+    return {"mean": round(len(on) / act_s, 1) if act_s > 0 else 0.0, "max": mx, "active_s": round(act_s, 1), "method": ONSET_METHOD}
+
+
+# ───────────────────────── 重音表 ─────────────────────────
+
+ACC_BANDS = (("low", "kick"), ("hi", "snare"))
+STRONG_S = 0.7
+HIT_JUMP = 7.0  # dB:加权总能量比前 2 s 的 90 分位高这么多,才算宽频大冲击(6 dB 时每个乐句头的镲片都算进来)
+
+
+def _band_peaks(e_db, env, t):
+    """一个频段的起音峰:±60 ms 内最大的上升沿。返回 (帧号, 上升 dB, 峰后能量 − 该频段 95 分位)。"""
+    W = int(0.06 / DT)
+    idx = np.where((env == maxfilt(env, W)) & (env > 0.3))[0]
+    if not len(idx):
+        return idx, np.array([]), np.array([])
+    p95 = np.percentile(e_db, 95)
+    pre0, pre1, post = int(0.20 / DT), int(0.03 / DT), int(0.06 / DT)
+    rise = np.empty(len(idx))
+    lvl = np.empty(len(idx))
+    for k, i in enumerate(idx):
+        a, b = max(0, i - pre0), max(1, i - pre1)
+        if b <= a:
+            b = a + 1
+        pk = e_db[i:min(len(e_db), i + post)].max()
+        rise[k] = pk - e_db[a:b].mean()
+        lvl[k] = pk - p95
+    keep = (rise >= 1.5) & (lvl > -40)
+    return idx[keep], rise[keep], lvl[keep]
+
+
+def hit_jumps(E, totw, merged):
+    """每个候选的「宽频大冲击」跳变量(dB),不算冲击的是 0:加权总能量峰后 50 ms 的最大值比前 2 s 的 90 分位高 ≥ HIT_JUMP,
+    四个频段里至少两个也各自高 ≥ 4 dB,且响度在全曲高位 10 dB 以内。(低频铺底很厚时只看总能量会漏掉高频整片砸下来的落版重击,
+    所以用加权总能量。)"""
+    loud = np.percentile(totw, 95)
+    post, pre0, pre1 = int(0.05 / DT), int(2.0 / DT), int(0.05 / DT)
+
+    def jump(e, i):
+        after = e[i:min(len(e), i + post)].max()
+        a, b = max(0, i - pre0), max(0, i - pre1)
+        before = np.percentile(e[a:b], 90) if b - a >= 4 else e.min()
+        return after - before, after
+
+    out = np.zeros(len(merged))
+    for k, c in enumerate(merged):
+        j, after = jump(totw, c["i"])
+        nb = sum(1 for b in ("low", "mid", "hi", "air") if jump(E[b], c["i"])[0] >= 4)
+        if j >= HIT_JUMP and nb >= 2 and after > loud - 10:
+            out[k] = j
+    return out
+
+
+def detect_accents(E):
+    """E:analyze() 的各频段能量(dB,步长 DT)。返回 (候选列表[{t, strength, kind}], 候选总数)。
+    强度见文件头「重音的算法」;s(百分位)由调用方按 strength 排。"""
+    n = len(E["low"])
+    t = np.arange(n) * DT
+    cands = []
+    for band, kind in ACC_BANDS:
+        e = E[band]
+        idx, rise, lvl = _band_peaks(e, onset_from_db(e), t)
+        if not len(idx):
+            continue
+        ti = t[idx]
+        g75 = np.percentile(rise, 75)
+        loc = np.maximum(np.array([np.percentile(rise[np.abs(ti - tt) <= 3.0], 75) for tt in ti]), 0.5 * g75)
+        w = np.clip(1 + lvl / 20.0, 0.05, 1.0)
+        # 频段内的突出度(全曲 × 局部 的几何平均),只用来定 kind 和时刻
+        st = np.sqrt(rise / max(g75, 1e-6) * rise / np.maximum(loc, 1e-6)) * w
+        cands += [{"i": int(i), "t": float(t[i]), "band_s": float(s_), "kind": kind} for i, s_ in zip(idx, st)]
+    cands.sort(key=lambda c: c["t"])
+    # 同一下打击在两个频段各有一个峰(底鼓的「咔」在高频先到,低频能量的上升沿晚 30–70 ms):70 ms 内合成一个
+    groups = []
+    for c in cands:
+        if groups and c["t"] - groups[-1][0]["t"] <= 0.07 and c["kind"] not in {g["kind"] for g in groups[-1]}:
+            groups[-1].append(c)
+        else:
+            groups.append([c])
+    if not groups:
+        return [], 0
+    # 强度 = 加权总能量的上升量(低频 −6 dB、1.5–4 kHz +3 dB,近似人耳):底鼓、军鼓让整体响度跳一下,踩镲几乎不动总响度
+    wts = {"low": -6.0, "mid": 0.0, "hi": 3.0, "air": 0.0}
+    totw = 10 * np.log10(sum(10 ** ((E[k] + wts.get(k, 0.0)) / 10) for k in E) + 1e-12)
+    loudw = np.percentile(totw, 95)
+    pre0, pre1, post = int(0.20 / DT), int(0.03 / DT), int(0.06 / DT)
+    merged = []
+    for g in groups:
+        top_ = max(g, key=lambda c: c["band_s"])
+        low = [c for c in g if c["kind"] == "kick"]
+        kind = "kick" if low and low[0]["band_s"] >= 0.6 * top_["band_s"] else top_["kind"]
+        first = min((c for c in g if c["band_s"] >= 0.5 * top_["band_s"]), key=lambda c: c["t"])
+        i0, i1 = min(c["i"] for c in g), max(c["i"] for c in g)
+        a, b = max(0, i0 - pre0), max(1, i0 - pre1)
+        if b <= a:
+            b = a + 1
+        after = totw[i0:min(n, i1 + post)].max()
+        rise = after - totw[a:b].mean()
+        w = float(np.clip(1 + (after - loudw) / 20.0, 0.05, 1.0))
+        merged.append({"i": first["i"], "t": first["t"], "strength": max(0.0, float(rise)) * w, "kind": kind})
+    if not merged:
+        return [], 0
+    jumps = hit_jumps(E, totw, merged)
+    top = max(c["strength"] for c in merged)
+    tt = np.array([c["t"] for c in merged])
+    for k, c in enumerate(merged):
+        if jumps[k] > 0 and jumps[k] >= jumps[np.abs(tt - c["t"]) <= 1.0].max():
+            c["kind"] = "hit"
+            c["strength"] = top * 1.01 + jumps[k] / 100.0
+    return merged, len(merged)
+
+
+def ranked_accents(E):
+    """→ (候选列表, 每个候选的百分位 s 数组)。bands.py 也用它。"""
+    cands, _ = detect_accents(E)
+    if not cands:
+        return [], np.array([])
+    st = np.array([c["strength"] for c in cands])
+    order = np.argsort(st, kind="stable")
+    s = np.empty(len(st))
+    s[order] = (np.arange(len(st)) + 0.5) / len(st)
+    return cands, s
+
+
+def accent_table(x, E, P, off_film, trim, min_s=0.5):
+    """→ (accents 列表, accent_stats)。P / off_film / trim 用来标最近的 8 分音符(成片时间网格)。"""
+    cands, s = ranked_accents(E)
+    dur = len(x) / SR
+    if not cands:
+        return [], {"pool": 0, "pool_per_s": 0.0, "listed": 0, "strong_per_s": 0.0, "min_s": min_s, "strong_s": STRONG_S}
+    out = []
+    half = P / 2
+    for c, sv in zip(cands, s):
+        if sv < min_s:
+            continue
+        tf = c["t"] - trim
+        k = int(round((tf - off_film) / half))
+        out.append({"t": round(c["t"], 3), "s": round(float(sv), 3), "kind": c["kind"], "eighth": k,
+                    "dev_ms": int(round((tf - (off_film + k * half)) * 1000))})
+    stats = {"pool": len(cands), "pool_per_s": round(len(cands) / dur, 2), "listed": len(out),
+             "strong_per_s": round(float((s >= STRONG_S).sum()) / dur, 2), "min_s": min_s, "strong_s": STRONG_S}
+    return out, stats
+
+
+def eighth_label(k, bpb):
+    """8 分音符序号 → 「小节.拍」(从 1.1 起,「+」= 后半拍)。"""
+    bar, r = divmod(int(k), 2 * bpb)
+    return f"{bar + 1}.{r // 2 + 1}" + ("+" if r % 2 else "")
+
+
+def print_accents(acc, stats, dens, off_film, P, bpb, trim, fps, k=12):
+    print(f"起音密度:有声段平均 {dens['mean']}/s,1 秒窗最多 {dens['max']}(有声段 {dens['active_s']} s)"
+          + ("  ⚠️ > 15/s:鼓组很密,按 4 分音符和强重音切,8 分音符留给动作内部" if dens["mean"] > 15 else ""))
+    strong = [a for a in acc if a["s"] >= STRONG_S]
+    print(f"重音表:{len(acc)} 个(s ≥ {stats['min_s']}),其中强重音 s ≥ {STRONG_S} {len(strong)} 个 = {stats['strong_per_s']}/s;"
+          f"kick {sum(a['kind'] == 'kick' for a in acc)} / snare {sum(a['kind'] == 'snare' for a in acc)} / hit {sum(a['kind'] == 'hit' for a in acc)}")
+    idx = {id(a): i for i, a in enumerate(acc)}
+    top = sorted(sorted(acc, key=lambda a: -a["s"])[:k], key=lambda a: a["t"])
+    if top:
+        print(f"  最强的 {len(top)} 个(序号 = edit.json 里 {{\"accent\": n}} 的 n;帧 = 成片帧,未减 lead):")
+    for a in top:
+        tf = a["t"] - trim
+        print(f"    #{idx[id(a)]:<4d} {a['t']:7.3f}s  帧 {tf * fps:7.1f}  {eighth_label(a['eighth'], bpb):7s} 8分#{a['eighth']:<4d} {a['dev_ms']:+4d}ms  s={a['s']:.3f}  {a['kind']}")
+
+
+def accents_only(o):
+    path = o.out or os.path.join(os.path.dirname(os.path.abspath(o.audio)), "beats.json")
+    if not os.path.exists(path):
+        sys.exit(f"--accents-only 要沿用已有的拍网格,但 {path} 不存在(先不加 --accents-only 跑一遍)")
+    bj = json.load(open(path, encoding="utf-8"))
+    x = load(o.audio)
+    E, _, _ = analyze(x)
+    P, off, trim = float(bj["beat_s"]), float(bj["offset_s"]), float(bj.get("trim_s", 0) or 0)
+    acc, stats = accent_table(x, E, P, off, trim, o.min_s)
+    dens = onset_density(x)
+    if os.path.abspath(bj.get("src", "")) != os.path.abspath(o.audio):
+        print(f"注意:beats.json 的 src 是 {bj.get('src')},这次量的是 {o.audio};拍网格沿用原值,重音按这次的音频量")
+    bj.update({"accents": acc, "accent_stats": stats, "onset_density": dens, "accents_src": o.audio})
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(bj, f, ensure_ascii=False, indent=1)
+    print_accents(acc, stats, dens, off, P, int(bj.get("beats_per_bar", 4)), trim, float(bj.get("fps", 30)))
+    print(f"✓ {path}(只更新了 accents / accent_stats / onset_density)")
+
+
 def main():
     ap = argparse.ArgumentParser(description="稳健测速 → beats.json")
     ap.add_argument("audio")
@@ -246,7 +506,11 @@ def main():
     ap.add_argument("--fps", type=float, default=30)
     ap.add_argument("--downbeat", type=float, default=None, help="已知一个小节头的原曲秒数")
     ap.add_argument("--bars", type=int, default=16, help="preview 列前几小节")
+    ap.add_argument("--min-s", type=float, default=0.5, help="重音表只写强度百分位 ≥ 这个值的")
+    ap.add_argument("--accents-only", action="store_true", help="只重测重音表和起音密度,拍网格沿用已有 beats.json")
     o = ap.parse_args()
+    if o.accents_only:
+        return accents_only(o)
 
     x = load(o.audio)
     dur = len(x) / SR
@@ -354,6 +618,8 @@ def main():
     for bar in range(o.bars):
         fr = [int(round((off + (bar * o.bpb + k) * P) * o.fps)) for k in range(o.bpb)]
         preview.append({"bar": bar, "frames": fr})
+    acc, acc_stats = accent_table(x, E, P, off, o.trim, o.min_s)
+    dens = onset_density(x)
     out = {
         "bpm": round(bpm, 3), "beat_s": round(P, 6), "offset_s": round(off, 4),
         "beats_per_bar": o.bpb, "lead_frames": o.lead, "fps": o.fps,
@@ -370,6 +636,9 @@ def main():
                             "score": round(r_["score"], 3)} for r_ in results[:6]],
         },
         "preview": preview,
+        "onset_density": dens,
+        "accent_stats": acc_stats,
+        "accents": acc,
     }
     path = o.out or os.path.join(os.path.dirname(os.path.abspath(o.audio)), "beats.json")
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
@@ -386,6 +655,7 @@ def main():
     print(f"offset_s = {off:.4f}(成片时间,trim_s={o.trim})  第 0 小节头 = 帧 {off * o.fps:.2f}")
     for p in preview[:4]:
         print(f"  小节 {p['bar']:2d}: {p['frames']}")
+    print_accents(acc, acc_stats, dens, off, P, o.bpb, o.trim, o.fps)
     print(f"✓ {path}")
 
 

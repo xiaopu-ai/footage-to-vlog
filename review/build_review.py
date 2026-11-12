@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""从 src/timeline.json 生成审核台（风格帧 / 分镜）：选帧 → 模板 tools/stills.mjs 渲静帧 → 出图、拼转场图 → page.json → index.html。
+"""生成本地审核台。分镜 / 风格帧：从 src/timeline.json 选帧 → 模板 tools/stills.mjs 渲静帧 → 出图、拼转场图 → page.json → index.html。
+媒体审核页（配乐候选、节奏预演、成片）：列出音视频播放器，逐条标通过 / 要改 / 待定并写意见。
 
 用法：
   python3 review/build_review.py <proj> [--kind board|sf] [--frames-per-shot N] [--version v1] [--title "…"]
                                  [--notes notes.json] [--timeline 另一份.json] [--no-render] [--serve] [--port 8765]
+  python3 review/build_review.py <proj> --kind media [--name music|rhythm|film|…] --audio a.mp3 b.mp3 … --video preview.mp4 …
+                                 [--title "…"] [--notes notes.json|"一句话"] [--marks marks.json] [--from-frame 0] [--no-wave]
+                                 [--version v1] [--serve] [--port 8765]
   <proj>  从 template/ 复制出来的项目目录（有 src/timeline.json、tools/stills.mjs、node_modules）
   --kind board（默认）分镜：每个主轨镜头取「开场 / 每个文字或动作节拍落定后 / 落幅」+ 出场转场图
          sf         风格帧：每镜一张（文字最全、落定后的那一帧），不拼转场
@@ -14,6 +18,21 @@
 
 产物：<proj>/work/review/<kind>/ 下的 index.html、page.json、frames/、thumbs/、_png/（原始静帧）；意见存在同目录 feedback.json。
 服务：python3 review/serve_local.py <proj>/work/review/<kind> --port 8765，把 http://localhost:8765/ 给用户。
+素材覆盖：--kind board 时如果有 <proj>/work/coverage.json（scripts/coverage.py 产出），顶栏显示「素材 X / Y」，
+  点开是「已用 X / Y 条素材，复用最多的是…，还有 N 条没用」和按目录分组的未用清单；没有这个文件就不显示。
+
+媒体审核页（--kind media）：
+  🔴 不要把 mp3 / mp4 文件直接丢给用户、也不要靠聊天里的内嵌图片：不少 agent 宿主预览不了本地音视频、不显示图片
+     （DeepSeek 实测三轮沟通白费）。一律出这个页面 + serve_local.py，把 http://localhost:端口/ 给用户。
+  --name       子目录名，产物在 <proj>/work/review/<name>/，默认 media。约定：配乐候选 music、节奏预演 rhythm、成片 film，
+               各自一份 feedback.json，互不覆盖。同名文件重出时沿用已有意见（条目 id = 文件名去掉扩展名）。
+  --audio / --video   要审的文件（可多个；相对路径按当前目录解析）。文件用硬链接放进 <name>/media/（跨盘改软链，再不行复制）。
+  --marks      每条的说明、段落和重点：{"<文件名或 id>": {"desc": "说明", "chapters": [[起秒, 止秒, "段名"]], "marks": [[秒, "说明"]]}}
+               （也可以直接写成 [[秒, "说明"] 或 [起, 止, "段名"], …]）。
+  有 src/timeline.json 时：视频条目自动列出 sections（段落）和音效冲击点；--from-frame N 表示视频第 0 秒对应时间线第 N 帧
+  （节奏预演从 0 帧渲就是 0）。音频条目只有它就是时间线的配乐（audio.music.src）时才套 sections。
+  每条显示文件名、时长、大小、波形（ffmpeg 解码音轨，轻任务；--no-wave 跳过）；页面记录每条实际播放过的比例（played）。
+  键盘：空格 / K 播放暂停，J / L ∓5 秒，←/→ 换条，↑/↓ 跳段落，1/2/3 = 通过 / 要改 / 待定。
 
 转场图：硬切 = 「左：上一镜最后一帧 | 右：本镜第一帧」；其余转场 = 转场窗口里均匀取 4 帧拼 2×2，按序号读。
 🔴 本机同一时间只跑一个重任务：渲静帧前先把排队脚本路径放进环境变量 RENDER_QUEUE（stills.mjs 会自己排队），
@@ -24,6 +43,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -292,6 +312,295 @@ def plan(tl: dict, kind: str, per_shot: int):
     return entries, sorted(frames), comps, music_rows, hits
 
 
+# ───────────────────────── 素材覆盖（board 顶栏）─────────────────────────
+
+def _num(x):
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, (int, float)):
+        return int(x)
+    if isinstance(x, (list, dict)):
+        return len(x)
+    return None
+
+
+def _first(d, *keys):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return None
+
+
+def load_coverage(proj):
+    """读 work/coverage.json（同事的 scripts/coverage.py 产出），整理成 {used, total, unused_n, summary, top_reused, unused}。
+    字段名按常见写法容错；读不出用量和总数就返回 None（页面不显示，不报错）。"""
+    f = os.path.join(proj, "work", "coverage.json")
+    if not os.path.isfile(f):
+        return None
+    try:
+        d = json.load(open(f, encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"⚠ work/coverage.json 读不了（{e}），审核台不显示素材用量")
+        return None
+    if not isinstance(d, dict):
+        return None
+    src = d.get("summary") if isinstance(d.get("summary"), dict) else d
+    total = _num(_first(src, "total", "footage_total", "n_footage", "discovered", "footage")) or _num(_first(d, "total", "footage"))
+    used = _num(_first(src, "used", "used_count", "n_used", "used_sources", "sources_used"))
+    unused_raw = _first(d, "unused", "unused_by_dir", "unused_sources", "not_used")
+    unused = {}
+    if isinstance(unused_raw, dict):
+        for k, v in unused_raw.items():
+            if isinstance(v, list):
+                unused[str(k)] = [os.path.basename(str(x.get("path") or x.get("src") or x) if isinstance(x, dict) else str(x)) for x in v]
+    elif isinstance(unused_raw, list):
+        for x in unused_raw:
+            p = str(x.get("path") or x.get("src") or "") if isinstance(x, dict) else str(x)
+            unused.setdefault(os.path.dirname(p), []).append(os.path.basename(p))
+    # coverage.py v1:unused 是条数,按目录的未用清单在 by_dir[{"dir","unused":[路径…]}] 里
+    if not unused and isinstance(d.get("by_dir"), list):
+        for e in d["by_dir"]:
+            if isinstance(e, dict) and isinstance(e.get("unused"), list) and e["unused"]:
+                unused[str(e.get("dir", ""))] = [os.path.basename(str(x)) for x in e["unused"]]
+    if isinstance(d.get("unused"), (int, float)) and _num(_first(src, "unused_count", "n_unused")) is None:
+        src = dict(src, unused_count=d["unused"])
+    # 没用的条数:显式字段 > 总数 − 已用 > 清单长度(清单可能只列了一部分)
+    unused_n = _num(_first(src, "unused_count", "n_unused"))
+    if unused_n is None and total is not None and used is not None:
+        unused_n = total - used
+    if unused_n is None and unused:
+        unused_n = sum(len(v) for v in unused.values())
+    if used is None and total is not None and unused_n is not None:
+        used = total - unused_n
+    if not total or used is None:
+        print("⚠ work/coverage.json 里认不出「已用 / 总数」，审核台不显示素材用量")
+        return None
+    reuse_raw = _first(d, "top_reused", "reused", "reuse", "repeats", "reuse_counts", "uses")
+    top = []
+    if isinstance(reuse_raw, dict):
+        top = [[os.path.basename(str(k)), int(v if isinstance(v, (int, float)) else _num(v) or 0)] for k, v in reuse_raw.items()]
+    elif isinstance(reuse_raw, list):
+        for x in reuse_raw:
+            if isinstance(x, dict):
+                n = _first(x, "count", "n", "times", "uses", "shots")
+                top.append([os.path.basename(str(_first(x, "src", "path", "name", "file") or "?")), _num(n) or 0])
+            elif isinstance(x, (list, tuple)) and len(x) >= 2:
+                top.append([os.path.basename(str(x[0])), _num(x[1]) or 0])
+    top = sorted((t for t in top if t[1] > 0), key=lambda t: -t[1])[:8]
+    rep = [t for t in top if t[1] > 1]
+    summary = f"已用 {used} / {total} 条素材" + (
+        "，复用最多的是 " + "、".join(f"{n}（{k} 次）" for n, k in rep[:3]) if rep else "，没有素材被复用") + (
+        f"，还有 {unused_n} 条没用" if unused_n else "，全部用上了")
+    return {"used": used, "total": total, "unused_n": unused_n or 0, "summary": summary, "top_reused": top, "unused": unused}
+
+
+# ───────────────────────── 媒体审核页 ─────────────────────────
+
+AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
+NAME_CN = {"music": "配乐候选", "rhythm": "节奏预演", "film": "成片", "media": "试听 / 试看"}
+
+
+def _ff():
+    return os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+
+
+def media_info(path):
+    """→ {dur, has_audio, has_video}。有 ffprobe 用 ffprobe，没有就解析 ffmpeg -i；都没有就全是 None（页面自己读时长）。"""
+    info = {"dur": None, "has_audio": None, "has_video": None}
+    fp = os.environ.get("FFPROBE") or shutil.which("ffprobe")
+    try:
+        if fp:
+            r = subprocess.run([fp, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            j = json.loads(r.stdout.decode("utf-8", "replace") or "{}")
+            st = j.get("streams", [])
+            info["dur"] = float((j.get("format") or {}).get("duration") or 0) or None
+            info["has_audio"] = any(x.get("codec_type") == "audio" for x in st)
+            info["has_video"] = any(x.get("codec_type") == "video" and not (x.get("disposition") or {}).get("attached_pic") for x in st)
+            return info
+        ff = _ff()
+        if not ff:
+            return info
+        r = subprocess.run([ff, "-hide_banner", "-nostdin", "-i", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        t = r.stderr.decode("utf-8", "replace")
+        m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", t)
+        if m:
+            info["dur"] = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        info["has_audio"] = bool(re.search(r"Stream #\S+.*: Audio:", t))
+        info["has_video"] = any("attached pic" not in ln for ln in re.findall(r"Stream #\S+.*: Video:.*", t))
+    except (OSError, ValueError) as e:
+        print(f"⚠ 读不了 {path} 的信息：{e}")
+    return info
+
+
+def wave_peaks(path, n=1000):
+    """解码音轨（8 kHz 单声道，轻任务）→ n 个 0–100 的峰值；没有音轨 / 没有 ffmpeg 返回 None。"""
+    ff = _ff()
+    if not ff:
+        return None
+    r = subprocess.run([ff, "-hide_banner", "-nostdin", "-v", "error", "-i", path, "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "8000",
+                        "-f", "s16le", "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if r.returncode != 0 or len(r.stdout) < 4000:
+        return None
+    try:
+        import numpy as np
+        a = np.abs(np.frombuffer(r.stdout[: len(r.stdout) // 2 * 2], np.int16).astype(np.float32))
+        k = max(1, len(a) // n)
+        m = a[: k * (len(a) // k)].reshape(-1, k).max(axis=1)
+        ref = float(np.percentile(m, 99.5)) or 1.0
+        return [int(x) for x in np.clip(m / ref * 100, 0, 100).round()]
+    except ImportError:
+        import array
+        a = array.array("h")
+        a.frombytes(r.stdout[: len(r.stdout) // 2 * 2])
+        k = max(1, len(a) // n)
+        m = [max(abs(v) for v in a[i:i + k]) for i in range(0, len(a) - k + 1, k)]
+        ref = sorted(m)[int(len(m) * 0.995) - 1 if len(m) > 1 else 0] or 1
+        return [min(100, round(x / ref * 100)) for x in m]
+
+
+def link_into(src, dst):
+    """硬链接 → 软链 → 复制。返回用的方式。"""
+    if os.path.lexists(dst):
+        os.remove(dst)
+    try:
+        os.link(src, dst)
+        return "硬链接"
+    except OSError:
+        pass
+    try:
+        os.symlink(src, dst)
+        return "软链"
+    except OSError:
+        shutil.copy2(src, dst)
+        return "复制"
+
+
+def load_notes(arg, default):
+    if not arg:
+        return default
+    if os.path.isfile(arg):
+        txt = open(arg, encoding="utf-8").read()
+        try:
+            v = json.loads(txt)
+            return [str(x) for x in v] if isinstance(v, list) else [str(v)]
+        except ValueError:
+            return [html_escape(x) for x in txt.splitlines() if x.strip()]
+    return [html_escape(arg)]
+
+
+def html_escape(x):
+    import html as _h
+    return _h.escape(x)
+
+
+def media_main(a, proj):
+    files = [(p, "audio") for p in a.audio] + [(p, "video") for p in a.video]
+    if not files:
+        sys.exit("--kind media 要给 --audio 和 / 或 --video 文件")
+    name = re.sub(r"[^\w.-]+", "-", a.name).strip("-") or "media"
+    out = os.path.join(proj, "work/review", name)
+    mdir = os.path.join(out, "media")
+    os.makedirs(mdir, exist_ok=True)
+
+    tl = None
+    tl_path = os.path.abspath(a.timeline) if a.timeline else os.path.join(proj, "src/timeline.json")
+    if not a.no_timeline and os.path.isfile(tl_path):
+        try:
+            tl = json.load(open(tl_path, encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"⚠ {tl_path} 读不了（{e}），不列段落")
+    marks_cfg = {}
+    if a.marks:
+        marks_cfg = json.load(open(a.marks, encoding="utf-8"))
+    off = a.from_frame / FPS
+    secs, hits, music_abs, music_from = [], [], None, 0.0
+    if tl:
+        secs = [[x["from"] / FPS - off, x["to"] / FPS - off, str(x.get("name", ""))] for x in (tl.get("sections") or [])
+                if isinstance(x, dict) and "from" in x and "to" in x]
+        au = tl.get("audio") or {}
+        hits = [[x["from"] / FPS - off, str(x.get("note") or x.get("id") or os.path.basename(str(x.get("src", ""))))]
+                for x in (au.get("sfx") or []) if isinstance(x, dict) and "from" in x]
+        mu = au.get("music") or {}
+        if mu.get("src"):
+            music_abs = os.path.realpath(os.path.join(proj, "public", mu["src"]))
+            music_from = float(mu.get("from") or 0) / FPS
+
+    items, used_ids, linked = [], set(), set()
+    for p, kind in files:
+        ap = os.path.abspath(p)
+        if not os.path.isfile(ap):
+            sys.exit(f"文件不存在：{p}")
+        base = os.path.basename(ap)
+        stem, ext = os.path.splitext(base)
+        iid = re.sub(r"[^\w.-]+", "-", stem).strip("-") or "item"
+        k, n = iid, 2
+        while k in used_ids:
+            k, n = f"{iid}-{n}", n + 1
+        iid = k
+        used_ids.add(iid)
+        if kind == "audio" and ext.lower() not in AUDIO_EXT:
+            print(f"⚠ {base} 不像音频文件，按 --audio 处理")
+        fn = iid + ext.lower()
+        how = link_into(ap, os.path.join(mdir, fn))
+        linked.add(fn)
+        info = media_info(ap)
+        if kind == "video" and info["has_video"] is False:
+            print(f"⚠ {base} 没有视频流，改按音频列出")
+            kind = "audio"
+        it = {"id": iid, "name": base, "file": base, "kind": kind, "src": "media/" + fn,
+              "dur": round(info["dur"], 3) if info["dur"] else None, "size": os.path.getsize(ap), "chapters": [], "marks": []}
+        if tl and (kind == "video" or (music_abs and os.path.realpath(ap) == music_abs)):
+            o = 0.0 if kind == "video" else -music_from  # 时间线配乐：音乐自己的第 0 秒 = 时间线 music.from
+            D = it["dur"] or 1e9
+            it["chapters"] = [[round(max(0.0, x0 + o), 3), round(min(D, x1 + o), 3), nm] for x0, x1, nm in secs if x1 + o > 0 and x0 + o < D]
+            it["marks"] = [[round(t + o, 3), nm] for t, nm in hits if 0 <= t + o < D] if kind == "video" else []
+        mc = marks_cfg.get(iid) or marks_cfg.get(base) or marks_cfg.get(stem)
+        if isinstance(mc, list):
+            mc = {"marks": mc}
+        if isinstance(mc, dict):
+            it["desc"] = str(mc.get("desc", ""))
+            for x in mc.get("chapters", []) + mc.get("marks", []):
+                if isinstance(x, (list, tuple)) and len(x) >= 3 and isinstance(x[1], (int, float)):
+                    it["chapters"].append([float(x[0]), float(x[1]), str(x[2])])
+                elif isinstance(x, (list, tuple)) and len(x) >= 2:
+                    it["marks"].append([float(x[0]), str(x[1])])
+            it["chapters"].sort()
+            it["marks"].sort()
+        if not a.no_wave and info["has_audio"] is not False:
+            it["peaks"] = wave_peaks(ap)
+        items.append(it)
+        print(f"  ✓ {kind} {base} → {name}/media/{fn}（{how}）· {it['dur'] or '?'} s · {len(it['chapters'])} 段 · {len(it['marks'])} 个重点"
+              + ("" if it.get("peaks") else " · 无波形"))
+    for f in os.listdir(mdir):  # 上一版留下、这次不审的文件（都是本脚本建的链接 / 副本）
+        if f not in linked:
+            os.remove(os.path.join(mdir, f))
+
+    na, nv = sum(1 for x in items if x["kind"] == "audio"), sum(1 for x in items if x["kind"] == "video")
+    what = NAME_CN.get(name, name)
+    default_notes = [
+        "逐条播放：<b>空格</b>播放 / 暂停，<b>J / L</b> 后退 / 前进 5 秒，<b>↑ / ↓</b> 跳段落，点波形跳转。",
+        "按 <b>1 / 2 / 3</b> 标通过 / 要改 / 待定，意见写在右侧；「记下当前时间」会把播放位置插进意见。",
+        "页面记下每条实际播放了多少（右下「已播放 xx%」）。",
+    ]
+    today = datetime.date.today().isoformat()
+    title_proj = (tl or {}).get("title") or os.path.basename(proj)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in os.path.basename(proj)).strip("-") or "ftv"
+    page = {
+        "kind": "media", "slug": f"{slug}-{name}", "title": a.title or f"{title_proj} · {what}",
+        "brand": " · ".join(x for x in [what + " " + a.version, f"{na} 条音频" if na else "", f"{nv} 条视频" if nv else ""] if x),
+        "version": f"{name}-{a.version}", "sub": f"{what} {a.version} · {today}",
+        "notes": load_notes(a.notes, default_notes), "items": items,
+    }
+    json.dump(page, open(os.path.join(out, "page.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    open(os.path.join(out, "index.html"), "w", encoding="utf-8").write(local_page.build_player(page))
+    print(f"✓ {out}/index.html：{len(items)} 条（{na} 音频 / {nv} 视频）；意见存 {out}/feedback.json")
+    serve = [sys.executable, os.path.join(HERE, "serve_local.py"), out, "--port", str(a.port)]
+    print("服务：" + " ".join(serve) + f"   → http://localhost:{a.port}/")
+    if a.serve:
+        os.execv(sys.executable, serve)
+
+
 def font_loader(proj):
     path = os.path.join(proj, "public/fonts/NotoSansSC-VF.ttf")
 
@@ -312,7 +621,7 @@ def font_loader(proj):
 def main():
     ap = argparse.ArgumentParser(description="footage-to-vlog 审核台")
     ap.add_argument("proj")
-    ap.add_argument("--kind", choices=["board", "sf"], default="board")
+    ap.add_argument("--kind", choices=["board", "sf", "media"], default="board")
     ap.add_argument("--frames-per-shot", type=int, default=0)
     ap.add_argument("--version", default="v1")
     ap.add_argument("--title")
@@ -321,9 +630,18 @@ def main():
     ap.add_argument("--no-render", action="store_true")
     ap.add_argument("--serve", action="store_true")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--audio", nargs="+", action="extend", default=[], help="media：要审的音频")
+    ap.add_argument("--video", nargs="+", action="extend", default=[], help="media：要审的视频")
+    ap.add_argument("--name", default="media", help="media：产物子目录（music / rhythm / film …）")
+    ap.add_argument("--marks", help="media：每条的说明 / 段落 / 重点 JSON")
+    ap.add_argument("--from-frame", type=int, default=0, help="media：视频第 0 秒对应时间线第几帧")
+    ap.add_argument("--no-wave", action="store_true", help="media：不算波形")
+    ap.add_argument("--no-timeline", action="store_true", help="media：不读 timeline.json 的段落")
     a = ap.parse_args()
 
     proj = os.path.abspath(a.proj)
+    if a.kind == "media":
+        return media_main(a, proj)
     tl_path = os.path.abspath(a.timeline) if a.timeline else os.path.join(proj, "src/timeline.json")
     tl = json.load(open(tl_path, encoding="utf-8"))
     out = os.path.join(proj, "work/review", a.kind)
@@ -399,7 +717,7 @@ def main():
             "静帧只能看画面；节奏、卡点要看动起来的小样。键盘：←/→ 换镜，↑/↓ 换图，1/2/3 = 通过 / 要改 / 待定。",
         ]
     )
-    notes = json.load(open(a.notes, encoding="utf-8")) if a.notes else default_notes
+    notes = load_notes(a.notes, default_notes)
     slug = "".join(ch if ch.isalnum() else "-" for ch in os.path.basename(proj)).strip("-") or "ftv"
     page = {
         "slug": f"{slug}-{a.kind}",
@@ -413,6 +731,11 @@ def main():
         "music": music_rows,
         "hits": hits,
     }
+    if a.kind == "board":
+        cov = load_coverage(proj)
+        if cov:
+            page["coverage"] = cov
+            print("素材覆盖：" + cov["summary"])
     pj = os.path.join(out, "page.json")
     json.dump(page, open(pj, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     open(os.path.join(out, "index.html"), "w", encoding="utf-8").write(local_page.build(page))

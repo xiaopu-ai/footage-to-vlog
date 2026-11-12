@@ -28,6 +28,17 @@
                              levels(auto 量出来的 p5/p95), profile, lut, look, fix, audio, hwaccel, seconds, …}}}
   参数 hash 不变就跳过(hash 含素材大小 / 修改时间、区间、曲线、LUT 和色表文件内容、fix、音频;不含质量)。
   已有 final 时跑 --draft 不会降级覆盖。成片渲染前跑 --check,必须 all_final。
+
+切完每条都自检(final 和 draft 都做,结果写进清单):
+  调色越线:片段可见区间(去掉 handles)25% / 50% / 75% 抽 3 帧量亮度,任一帧 p5 < 0.02 或 p95 > 0.96 →
+    开着 fix.levels:标「色表和 levels 冲突」(levels 拉满后强对比色表又压一次);没开:标「压死 / 削顶」。
+    清单里 clips.<id>.grade = {p5, p50, p95}(3 帧里最差的 p5 / p95)、clips.<id>.warn = [说明…],终端打印,最后汇总。
+    只是警告,不改退出码;改法:去掉 levels 改用 exposure / warm,或把 levels_target 收到 [0.06, 0.86](measure.py 会量好两种改法)。
+  耗时:每条打印用时;单条超过预期 10 倍(按本次 / 上次同质量片段的「秒 / 帧」中位数估)时提示「可能是休眠」。
+    另外用墙钟和单调时钟的差直接测系统休眠了多久(macOS / Linux 的单调时钟在休眠时不走)。
+    起因:用户离开时系统休眠,ffmpeg 被挂起,3 条片段各空转 900+ 秒。queue.sh 已默认 caffeinate -i 防休眠。
+
+缓存:硬解自测结果默认放 <proj>/work/cache(写不进只提示,见 ftvlib.py)。
 """
 import argparse
 import json
@@ -43,6 +54,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ftvlib as L  # noqa: E402
 
 MAKE_VERSION = "2"
+SLOW_FACTOR = 10      # 单条超过预期多少倍算异常
+SLOW_MIN_S = 30       # 低于这个秒数不报
+SLEEP_MIN_S = 5       # 墙钟比单调时钟多出这么多秒 = 系统休眠过
+
+
+def grade_selfcheck(path, nframes, fps, handles_frames, fix, look):
+    """量已切好的片段:可见区间 25 / 50 / 75% 三帧。返回 (grade, warn 列表)。"""
+    n = max(1, int(nframes or 0))
+    h = int(handles_frames)
+    a, b = (h, n - h) if n - 2 * h > 6 else (0, n)
+    times = [(a + (b - a) * k) / float(fps) for k in (0.25, 0.5, 0.75)]
+    ss = L.file_frame_stats(path, times)
+    g = {"p5": round(min(x["p5"] for x in ss), 4), "p50": round(sorted(x["p50"] for x in ss)[1], 4),
+         "p95": round(max(x["p95"] for x in ss), 4)}
+    chk = L.grade_check(g["p5"], g["p95"], fix, look)
+    return g, ([chk["msg"] + "。改法:" + chk["advice"]] if chk else [])
+
+
+def expected_rate(rates):
+    xs = sorted(rates)
+    return xs[len(xs) // 2] if len(xs) >= 2 else None
 
 
 def enc_args(draft, fps):
@@ -237,6 +269,7 @@ def main():
             L.die("timeline.json 里没有这些镜号:%s" % ", ".join(sorted(missing)))
     else:
         clips_run = clips
+    L.set_cache_dir(proj / "work" / "cache")
     out_dir = proj / "public" / "clips"
     out_dir.mkdir(parents=True, exist_ok=True)
     cj = out_dir / "clips.json"
@@ -277,8 +310,15 @@ def main():
 
     run_ids = {c["id"] for c in clips_run}
     todo = [p for p in plans if p["id"] in run_ids]
-    t_all = time.time()
+    t_all, m_all = time.time(), time.monotonic()
     done = skipped = 0
+    handles = float(project.get("handles_s") or 0)
+    # 「秒 / 帧」参考值:本次已切的同质量片段;不够两条时借清单里上次同质量的记录
+    q = "draft" if a.draft else "final"
+    hist = [m["seconds"] / max(1, m.get("frames") or 1) for m in man.values()
+            if m.get("quality") == q and m.get("seconds") and m.get("frames") and not m.get("slept_s")]
+    rates = []
+    graded_warn, slow_list, slept_total = [], [], 0.0
     for i, p in enumerate(todo, 1):
         st = status_of(p, man, out_dir, want)
         if not a.force and st.startswith("ok-"):
@@ -289,22 +329,54 @@ def main():
             i, len(todo), p["id"], p["entry"].get("path"), p["a"], p["b"], p["entry"]["profile"],
             " · fix %s" % json.dumps(p["fix"], ensure_ascii=False) if p["fix"] else "", " · 带声" if p["audio"] else ""),
             flush=True)
+        t_w, t_m = time.time(), time.monotonic()
         try:
             m = encode(p, out_dir, a.draft, fps)
         except Exception as ex:  # noqa: BLE001
             errors.append("%s:%s" % (p["id"], ex))
             print("  ✗ %s" % ex, file=sys.stderr, flush=True)
             continue
+        wall, mono = time.time() - t_w, time.monotonic() - t_m
+        m["seconds"] = round(wall, 1)  # 含 levels 测量和数帧,和预期值同一口径
+        slept = wall - mono if wall - mono > SLEEP_MIN_S else 0.0
+        slept_total += slept
+        nf = max(1, m.get("frames") or p["nframes"] or 1)
+        ref = expected_rate(rates) or expected_rate(hist)
+        exp_s = ref * nf if ref else None
+        if slept:
+            m["slept_s"] = round(slept, 1)
+        if exp_s and wall > SLOW_FACTOR * exp_s and wall > SLOW_MIN_S:
+            why = "系统休眠了约 %.0f s" % slept if slept else "单调时钟没停,可能是休眠 / 被挂起 / App Nap,或机器被别的任务占满"
+            slow_list.append("%s %.0f s(预期约 %.0f s)" % (p["id"], wall, exp_s))
+            m["slow"] = {"seconds": round(wall, 1), "expected_s": round(exp_s, 1), "slept_s": round(slept, 1)}
+            print("  ⚠️ %s 用了 %.0f s,是预期(约 %.0f s)的 %.0f 倍:可能是休眠(%s)。queue.sh 默认 caffeinate -i;"
+                  "合盖照样会睡" % (p["id"], wall, exp_s, wall / exp_s, why), flush=True)
+        elif slept:
+            print("  ⚠️ %s 期间系统休眠了约 %.0f s(ffmpeg 被挂起)" % (p["id"], slept), flush=True)
+        else:
+            rates.append(wall / nf)
+        try:
+            m["grade"], m["warn"] = grade_selfcheck(out_dir / ("%s.mp4" % p["id"]), m.get("frames") or p["nframes"], fps,
+                                                    round(handles * p["nfps"]), p["fix"], p["look"])
+        except Exception as ex:  # noqa: BLE001  自检失败不影响片段本身,但要说出来
+            m["grade"], m["warn"] = None, ["调色自检没跑成:%s" % str(ex)[-200:]]
+        if m["warn"]:
+            graded_warn.append((p["id"], m["warn"]))
         m["current"] = True
         man[p["id"]] = m
         done += 1
         if not m["frames_ok"]:
             errors.append("%s:帧数 %s ≠ 预期 %s" % (p["id"], m["frames"], m["expected_frames"]))
         flag = "" if m["frames_ok"] else "  ⚠️ 帧数 %s ≠ 预期 %s" % (m["frames"], m["expected_frames"])
-        print("  ✓ %s %s · %s 帧(预期 %s)· %s%s · %.1f s%s" % (
+        print("  ✓ %s %s · %s 帧(预期 %s)· %s%s · 用时 %.1f s%s%s" % (
             m["file"], m["quality"], m["frames"], m["expected_frames"], "硬解" if m["hwaccel"] else "软解",
             " · levels p5 %.3f p95 %.3f" % (m["levels"]["p5"], m["levels"]["p95"]) if m.get("levels") else "",
-            m["seconds"], flag), flush=True)
+            m["seconds"], " · 预期约 %.0f s" % exp_s if exp_s else "", flag), flush=True)
+        if m.get("grade"):
+            print("    调色后 p5 %.3f p50 %.3f p95 %.3f%s" % (m["grade"]["p5"], m["grade"]["p50"], m["grade"]["p95"],
+                                                         "" if m["warn"] else " ✓"), flush=True)
+        for w in m["warn"]:
+            print("    ⚠️ " + w, flush=True)
         write_manifest(cj, man, tl_ids, out_dir, project.get("title"))
 
     if a.prune:
@@ -317,9 +389,18 @@ def main():
             if k not in keep:
                 del man[k]
     ok = write_manifest(cj, man, tl_ids, out_dir, project.get("title"))
-    print("\n转了 %d 条,跳过 %d 条,%d 条出错,用时 %.0f s;%s" % (
-        done, skipped, len(errors), time.time() - t_all,
+    wall_all, mono_all = time.time() - t_all, time.monotonic() - m_all
+    print("\n转了 %d 条,跳过 %d 条,%d 条出错,用时 %.0f s%s;%s" % (
+        done, skipped, len(errors), wall_all,
+        "(其中系统休眠约 %.0f s)" % (wall_all - mono_all) if wall_all - mono_all > SLEEP_MIN_S else "",
         "全部是最新的 final,可以渲成片" if ok else "还不是全部 final(成片前跑一次不带 --draft 的)"))
+    if slow_list:
+        print("⚠️ %d 条耗时异常(超过预期 %d 倍):%s。多半是休眠:别合盖,或确认 queue.sh 的 caffeinate 生效"
+              % (len(slow_list), SLOW_FACTOR, ";".join(slow_list)))
+    if graded_warn:
+        print("⚠️ %d 条调色越线(只警告,清单 clips.json 的 warn 字段):" % len(graded_warn))
+        for cid, ws in graded_warn:
+            print("  %-10s %s" % (cid, ws[0]))
     for err in errors:
         print("✗ " + err, file=sys.stderr)
     sys.exit(1 if errors else 0)

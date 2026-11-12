@@ -306,3 +306,58 @@
   - clips:`from_frame`、`frames`。`make_clips.py` 按帧切:片段第 i 帧 = 源素材第 `from_frame + i` 个原生帧。
   - voice:`clip_start_s`、`layer`。
 - **有错误时**:timeline.json 照样写出(方便看),但退出码为 1。渲染前必须清零。
+
+## 8. 两次实测后新增（2026-11-12）
+
+### beats.json
+
+- `accents`：重音表。每项 `{t: 音乐文件秒, s: 0–1 强度百分位, kind: "kick|snare|hit", eighth: 最近的 8 分音符序号, dev_ms: 离它多少毫秒}`。
+- `accent_stats`：重音表的统计。
+- `onset_density`：`{mean: 每秒起音数, max, active_s}`。
+- 剪辑后的配乐用 `tempo.py --accents-only`：沿用已有网格，只重测重音。
+
+### edit.json 新写法
+
+| 写法 | 意思 |
+|---|---|
+| `{"accent": n}` | 重音表第 n 项（从 0 数，就是 `tempo.py` 打印的 # 号），按 `audio.music.at` / `trim_s` 平移到成片。画面会减 `lead_frames`，音效不减。用它定某镜的 `at` 时，上一镜不要写 `dur` |
+| 镜头 `"snap": "accent"` | 按 `at` / `dur` 排好后，把切点吸附到 ±4 帧内最近的强重音（`s ≥ 0.7`，同距离取更强的）。同层上一镜的结尾离旧切点 ≤ 4 帧时，跟着一起挪。找不到就警告 |
+| `speed` 关键点的位置写 T | `[[0, 1], [{"beat": 34}, 0.5], [1, 1]]`。0–1 的数字照旧当镜头内进度，写成时间点就按成片时间换算成进度 |
+| `sections[].kind` | `intro / build / stop / drop / breakdown / end / other`。`name` 里含 drop 也认作 drop。lint 按 kind 查各段规则 |
+| 镜头 `"allow_reuse": true` | 允许这一镜和同一素材的其他镜头源区间重叠或多次使用。lint 会列出来但不报错，`note` 里写理由 |
+| Logo | `endcard.logos` 的每项、`image.src` 都可以写字符串或 `{"src", "w"}`；缺 `src` 或类型不对会报错 |
+
+### timeline.json 新字段
+
+| 字段 | 说明 |
+|---|---|
+| `accents` | 成片帧的重音表 `{f, t, s, kind}`。**`f` 没减 lead**，是音频时刻；画面要对准它，就放在 `f − grid.lead_frames` |
+| `sections` | `{name, kind, from, to}` |
+| `cuts` | 主轨每个切点 `{f, shot, type, layer, accent, acc_d}`。`acc_d` 是离最近强重音多少帧 |
+| `expected_dark` | `[[from, to, 原因]]`：dip 转场、`src: null` 黑场镜头、深底落版卡。qa 只把这之外的黑场当问题 |
+| `stats` | 每段镜数、平均镜长、变速镜头数、drop 段重音命中率、碎镜比例、不同素材数 |
+| shots 新增 | `src_used_s`：实际用到的源区间；`snapped`：`{from, to, accent}` |
+
+### lint 新规则（错误 = 退出码 1）
+
+| 规则 | 适用 | 错误 | 警告 |
+|---|---|---|---|
+| 同一素材源区间重叠 > 0.2 s | 全部风格 | ✓（`allow_reuse` 豁免） | |
+| 同一素材用 ≥ 3 次；不同素材数 / 镜头数 < 0.7 | hype / launch / manifesto | | ✓ |
+| drop 段硬切落在强重音 ±2 帧内的比例（没有 drop 段就算全片） | hype | < 60% | < 75% |
+| 同上 | launch | | < 60% |
+| drop 段变速坡（`speed` 是关键点数组、最小值 < 0.9） | hype | 0 处 | < 2 处 |
+| 连续恒速镜头 > 4 个 | hype | | ✓ |
+| drop 段短于 1.5 s 的镜头：个数 > 40% **且**时长 > 30% | hype | | ✓ |
+| 配乐起音 > 15 次 / 秒，且 drop 平均镜长 < 1.6 s | hype | | ✓ |
+
+### 其他工作文件
+
+| 文件 | 由谁写 | 内容（字段见脚本开头） |
+|---|---|---|
+| `work/inventory-failed.json` | `inventory.py` | 盘点对账：status、counts（discovered / analyzed / failed / excluded）、失败原因、扫描范围 |
+| `work/coverage.json` | `coverage.py` | 素材总数、已用、按目录的未用清单、复用、源区间重叠、镜头日志缺漏 |
+| `work/capabilities.json` | `capabilities.py` | music / sfx / transcribe 各自的来源、传输方式、凭证状态、是否需要用户配置 |
+| `work/state.json`、`work/events.jsonl` | `state.py` | 节点审批（用户原话 + 输入文件 hash）和阶段事件 |
+| `work/render/<名>.json` | `render.py` | 渲染命令、帧数、各文件 sha256、混音响度 |
+| `work/qa/<名>.QA.json` | `qa.py` | 每项检查的结果、阈值、覆盖范围 |
